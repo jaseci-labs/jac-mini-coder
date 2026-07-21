@@ -66,9 +66,18 @@ elif [ ! -f "$DIR/main.jac" ]; then
     GIT_TERMINAL_PROMPT=0 git clone --depth 1 "https://github.com/$REPO.git" "$DIR" 2>/dev/null && ok=1
   fi
   if [ -z "$ok" ]; then
+    # prefer the latest release tarball; fall back to main
+    TAG="$(curl -fsSL "https://api.github.com/repos/$REPO/releases/latest" 2>/dev/null \
+           | sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p' | head -1)"
     mkdir -p "$DIR"
-    curl -fsSL "https://github.com/$REPO/archive/refs/heads/main.tar.gz" 2>/dev/null \
-      | tar xz -C "$DIR" --strip-components=1 2>/dev/null && ok=1 || true
+    if [ -n "$TAG" ]; then
+      curl -fsSL "https://github.com/$REPO/archive/refs/tags/$TAG.tar.gz" 2>/dev/null \
+        | tar xz -C "$DIR" --strip-components=1 2>/dev/null && ok=1 || true
+    fi
+    if [ -z "$ok" ]; then
+      curl -fsSL "https://github.com/$REPO/archive/refs/heads/main.tar.gz" 2>/dev/null \
+        | tar xz -C "$DIR" --strip-components=1 2>/dev/null && ok=1 || true
+    fi
   fi
   if [ -z "$ok" ] && [ -f "./main.jac" ] && [ -f "./jacsmith.jac" ]; then
     # running from inside a checkout (pre-release / private repo)
