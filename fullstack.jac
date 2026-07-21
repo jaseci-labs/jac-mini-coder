@@ -511,7 +511,10 @@ walker build_fullstack {
                                 }
                             }
                         }
-                    } except Exception {}
+                    } except Exception as vex {
+                        jacsmith._trace({"station": "verify", "kind": "slot", "slot": "judge_ui_error",
+                                         "output": str(vex)[:300]});
+                    }
                 }
             } finally {
                 srv.terminate();

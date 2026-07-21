@@ -13,6 +13,7 @@ entry-point = "main.jac"
 [dependencies]
 litellm = "latest"
 httpx = "latest"
+pillow = "latest"
 rich = "latest"
 
 [plugins.byllm.model]
