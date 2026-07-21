@@ -1,0 +1,22 @@
+# Canonical jac.toml for the GPU-box jacsmith project (~/jacsmith/jac.toml).
+# Shipped by box_init.sh. The two byllm settings are REQUIRED for gemma models:
+#   native_tools=true  defuses byLLM's gemma name-sniff, whose tool-call recovery
+#                      eats any typed JSON output that has a top-level "name" field
+#   think=false        defuses gemma's thinking-channel content burial
+# (see memory: byllm-gemma-sniff; upstream fix in jaseci-labs/jac PR #7493)
+
+[project]
+name = "jacsmith"
+version = "0.1.0"
+entry-point = "jacsmith.jac"
+
+[dependencies]
+litellm = "latest"
+httpx = "latest"
+
+[plugins.byllm.model]
+default_model = "ollama_chat/gemma4:e4b"
+native_tools = true
+
+[plugins.byllm.call_params]
+think = false

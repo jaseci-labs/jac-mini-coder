@@ -1,0 +1,23 @@
+# jac-mini-coder — project config.
+# The two byllm settings are REQUIRED when running gemma-family models:
+#   native_tools=true  defuses byLLM's gemma name-sniff (its tool-call recovery
+#                      eats any typed JSON output with a top-level "name" field)
+#   think=false        defuses gemma's thinking-channel content burial
+
+[project]
+name = "jac-mini-coder"
+version = "0.1.0"
+description = "A Jac coding agent small enough for small models — compiled task-graphs, typed slots, code-owned gates"
+entry-point = "main.jac"
+
+[dependencies]
+litellm = "latest"
+httpx = "latest"
+rich = "latest"
+
+[plugins.byllm.model]
+default_model = "gpt-4o-mini"
+native_tools = true
+
+[plugins.byllm.call_params]
+think = false
