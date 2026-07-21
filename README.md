@@ -32,12 +32,20 @@ OK backend built and verified
 
 ## Quickstart
 
-Requires the native [`jac`](https://www.jac-lang.org) binary and
-[ollama](https://ollama.com).
+```bash
+curl -fsSL https://raw.githubusercontent.com/jaseci-labs/jac-mini-coder/main/install.sh | bash
+jac-mini-coder
+```
+
+The installer sets up everything that's missing — the native
+[`jac`](https://www.jac-lang.org) binary, [ollama](https://ollama.com), and
+the model (`gemma4:e4b`, ~10 GB; `JAC_MINI_MODEL=<name>` to choose another) —
+and puts a `jac-mini-coder` launcher on your PATH. Idempotent; re-run any time.
+
+Manual alternative:
 
 ```bash
 ollama pull gemma4:e4b
-
 git clone https://github.com/jaseci-labs/jac-mini-coder.git && cd jac-mini-coder
 jac install
 jac run main.jac
