@@ -30,6 +30,7 @@ import json;
 import getpass;
 import minicoder;
 import fullstack;
+import mascot;
 import from jaclang.byllm.lib { Model }
 import from rich.console { Console }
 import from rich.panel { Panel }
@@ -238,13 +239,28 @@ with entry {
     http_base = os.environ.get("JACMINI_HTTP_BASE", os.environ.get("SMITH_HTTP_BASE", "")) or str(conf.get("http_base", ""));
 
     first_run = (not model_spec) and (not http_base);
-    banner = Text();
-    banner.append("⚒ Welcome to jac-mini-coder!\n\n", style="bold orange3");
-    banner.append("  write Jac with your own model — verified live\n\n", style="dim");
+    # ninja head beside the welcome text, claude-code style
+    art = mascot.head_lines();
+    info: list[list[str]] = [];
+    info.append(["", ""]);
+    info.append(["⚒ Welcome to jac-mini-coder!", "bold orange3"]);
+    info.append(["write Jac with your own model — verified live", "dim"]);
+    info.append(["", ""]);
     if not first_run {
-        banner.append("  model:     " + mode_label(model_spec, http_base, api_key) + "\n", style="default");
+        info.append(["model:     " + mode_label(model_spec, http_base, api_key), "default"]);
     }
-    banner.append("  workspace: " + work_dir, style="default");
+    info.append(["workspace: " + work_dir.replace(os.path.expanduser("~"), "~"), "default"]);
+    banner = Text();
+    rows = max(len(art), len(info));
+    for i in range(rows) {
+        if i < len(art) { banner.append_text(art[i]); }
+        else { banner.append(" " * len(mascot.HEAD[0])); }
+        banner.append("  ");
+        if (i < len(info)) and info[i][0] {
+            banner.append(info[i][0], style=info[i][1]);
+        }
+        if i < rows - 1 { banner.append("\n"); }
+    }
     console.print("");
     console.print(Panel(banner, box=richbox.ROUNDED, border_style="orange3", expand=False, padding=(0, 1)));
 

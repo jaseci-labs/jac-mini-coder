@@ -339,7 +339,7 @@ def render_frontend_impl(plan: minicoder.BuildPlan, auth: bool = False, nt: str 
         L.append("    ai_a = " + q + "Thinking…" + q + ";");
         L.append("    result = root spawn ask_ai(question=ai_q);");
         L.append("    if result.reports and len(result.reports) > 0 {");
-        L.append("        ai_a = str(result.reports[0]);");
+        L.append("        ai_a = " + q + "AI: " + q + " + str(result.reports[0]);");
         L.append("    } else { ai_a = " + q + "No answer came back." + q + "; }");
         L.append("}");
         L.append("");
@@ -359,6 +359,45 @@ def render_frontend_impl(plan: minicoder.BuildPlan, auth: bool = False, nt: str 
     L.append("}");
     return NL.join(L) + NL;
 }
+
+"""The generated app's AI runtime — code-owned, written at scaffold time,
+NEVER part of the model's authoring/repair canvas. The app follows the user's
+jac-mini-coder model choice: env first (JAC_AI_MODEL / JAC_AI_API_KEY /
+JAC_AI_HTTP_BASE), then ~/.jac-mini-coder/config.json, then local ollama.
+The API key is read at serve time — never baked into generated source."""
+def render_ai_module -> str {
+    q = DQ;
+    L: list[str] = [];
+    L.append("import from jaclang.byllm.lib { Model }");
+    L.append("import os;");
+    L.append("import json;");
+    L.append("");
+    L.append("def _ai_conf(field: str) -> str {");
+    L.append("    try {");
+    L.append("        with open(os.path.expanduser(" + q + "~/.jac-mini-coder/config.json" + q + ")) as f {");
+    L.append("            return str(json.load(f).get(field, " + q + q + "));");
+    L.append("        }");
+    L.append("    } except Exception { return " + q + q + "; }");
+    L.append("}");
+    L.append("");
+    L.append("glob AI_HTTP: str = os.environ.get(" + q + "JAC_AI_HTTP_BASE" + q + ", os.environ.get(" + q + "JACMINI_HTTP_BASE" + q + ", os.environ.get(" + q + "SMITH_HTTP_BASE" + q + ", _ai_conf(" + q + "http_base" + q + "))));");
+    L.append("glob AI_MODEL: str = os.environ.get(" + q + "JAC_AI_MODEL" + q + ", " + q + q + ") or _ai_conf(" + q + "model" + q + ") or " + q + "ollama_chat/gemma4:e4b" + q + ";");
+    L.append("glob AI_KEY: str = os.environ.get(" + q + "JAC_AI_API_KEY" + q + ", " + q + q + ") or _ai_conf(" + q + "api_key" + q + ");");
+    L.append("");
+    L.append("glob llm: Model = Model(");
+    L.append("    model_name=(AI_MODEL.split(" + q + "/" + q + ")[-1] if AI_HTTP else AI_MODEL),");
+    L.append("    api_key=(" + q + "local" + q + " if AI_HTTP else AI_KEY),");
+    L.append("    config=({" + q + "http_client" + q + ": True, " + q + "api_base" + q + ": AI_HTTP, " + q + "native_tools" + q + ": True} if AI_HTTP else {" + q + "native_tools" + q + ": True}),");
+    L.append("    call_params=({" + q + "think" + q + ": False} if AI_MODEL.startswith(" + q + "ollama" + q + ") else {})");
+    L.append(");");
+    L.append("");
+    L.append("def ai_answer(question: str, context: str) -> str by llm(temperature=0.3);");
+    L.append("sem ai_answer = " + q + "Answer the user's question using ONLY their data given as context. Be brief and specific; if the context has no answer, say so plainly." + q + ";");
+    L.append("sem ai_answer.question = " + q + "The user's question." + q + ";");
+    L.append("sem ai_answer.context = " + q + "The user's stored items, serialized." + q + ";");
+    return NL.join(L) + NL;
+}
+
 
 def render_main_entry(plan: minicoder.BuildPlan, copy: UiCopy, nt: str = "") -> str {
     node_t = nt if nt else minicoder._derive_node_name(plan);
@@ -554,23 +593,22 @@ def gate_ui(project_dir: str, plan: minicoder.BuildPlan, shot_path: str, dry: bo
         if ai {
             _browse(["fill", "#ai-question", "Summarize what I have so far."], project_dir);
             _browse(["click", "#ai-ask"], project_dir);
-            # the answer node appears instantly with a Thinking… placeholder;
-            # the gate is the LLM round-trip REPLACING it
+            # a real answer renders with the template's "AI: " prefix — poll
+            # for that marker; the Thinking… placeholder and the no-reports
+            # fallback both fail the gate
             answered = False;
             tries = 0;
-            while tries < 12 {
-                time.sleep(5);
+            while tries < 15 {
+                time.sleep(4);
                 s2 = _browse(["snapshot"], project_dir);
-                if ("Thinking" not in s2) and (("ai-answer" in s2) or ("No answer" in s2) or True) {
-                    answered = "Thinking" not in s2;
-                    if answered { break; }
-                }
+                if "AI:" in s2 { answered = True; break; }
+                if "No answer came back" in s2 { break; }
                 tries += 1;
             }
             if not answered {
                 _browse(["close"], project_dir);
                 return minicoder.CheckResult(ok=False,
-                    errors="UI: asked the AI but the answer never arrived (still thinking after 60s).");
+                    errors="UI: asked the AI but no real answer rendered within 60s.");
             }
         }
         _browse(["screenshot", shot_path], project_dir);
@@ -615,6 +653,21 @@ walker build_fullstack {
         self.plan = minicoder.plan_build(self.task, minicoder.BACKEND_DECL_GUIDE);
         minicoder._trace({"station": "plan", "kind": "slot", "slot": "plan_build",
                          "input": {"task": self.task}, "output": minicoder._plan_dict(self.plan)});
+        self.ai_mode = wants_ai(self.task);
+        minicoder.AI_MODE = self.ai_mode;
+        if self.ai_mode {
+            minicoder._trace({"station": "plan", "kind": "slot", "slot": "ai_mode", "output": True});
+            # the harness provides the AI endpoint (ask_ai, injected + templated);
+            # a model-planned twin (ask_assistant, chat, ...) would demand a
+            # hand-rolled by-llm impl the templates cannot gate — fold it out
+            non_ai = [e for e in self.plan.endpoints
+                      if not any([w in e.name.lower() for w in ["ask", "assistant", "chat", "answer", "query"]])];
+            if non_ai and (len(non_ai) < len(self.plan.endpoints)) {
+                self.plan.endpoints = non_ai;
+                minicoder._trace({"station": "plan", "kind": "slot", "slot": "ai_endpoint_fold",
+                                  "output": [e.name for e in self.plan.endpoints]});
+            }
+        }
         brief = self.plan.summary + " Endpoints: " + ", ".join([e.name for e in self.plan.endpoints]);
         try {
             self.copy = style_copy(brief, STYLE_JUDGMENT);
@@ -626,11 +679,6 @@ walker build_fullstack {
         if not self.copy.title { self.copy.title = self.plan.name; }
         if not self.copy.submit_label { self.copy.submit_label = "Add"; }
         self.auth_mode = wants_auth(self.task);
-        self.ai_mode = wants_ai(self.task);
-        minicoder.AI_MODE = self.ai_mode;
-        if self.ai_mode {
-            minicoder._trace({"station": "plan", "kind": "slot", "slot": "ai_mode", "output": True});
-        }
         if self.auth_mode {
             self.access = derive_access(self.plan, self.task);
             minicoder.ACCESS = self.access;
@@ -666,6 +714,9 @@ walker build_fullstack {
             minicoder._write(self.project_dir, "frontend.impl.jac", render_frontend_impl(self.plan, self.auth_mode, "", self.ai_mode));
             minicoder._write(self.project_dir, "frontend.css",
                             render_style_css(accent_for(self.plan.name)));
+            if self.ai_mode {
+                minicoder._write(self.project_dir, "ai.jac", render_ai_module());
+            }
             mc = os.path.join(self.project_dir, "components", "MessageCard.cl.jac");
             if os.path.exists(mc) { os.remove(mc); }
         }

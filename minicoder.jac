@@ -690,7 +690,8 @@ def gate_impl_complete(sk: Skeleton, final: bool) -> CheckResult {
                 continue;
             }
             f = re.match(r"\s*def\s+(\w+)\s*\(", line);
-            if f and line.rstrip().endswith(";") {
+            if f and line.rstrip().endswith(";") and (" by " not in line) {
+                # `by llm(...)` defs are complete at declaration — no impl exists
                 needed.append(f.group(1));
             }
         }
@@ -806,6 +807,10 @@ def gate_completeness(plan: BuildPlan, sk: Skeleton) -> CheckResult {
 the stub impl file is code-synthesized (replacing whatever the model emitted at
 that path) and impl_targets is code-derived — the model cannot drop either."""
 def force_stub_file(sk: Skeleton, plan: BuildPlan) {
+    for d in sk.decls {
+        # strip model-echoed path-tag lines and unescape quote artifacts
+        d.source = re.sub(r"(?m)^\s*===.*===\s*$", "", d.source).replace("\\'", "'");
+    }
     # the contract is TWO files — drop any hallucinated extras before they can
     # fail a gate (models occasionally invent main.impl.jac / helper files).
     # If the decl file came back under a wrong name, claim it rather than drop it.
@@ -857,38 +862,17 @@ def force_stub_file(sk: Skeleton, plan: BuildPlan) {
         }
     }
     if AI_MODE {
+        # the AI runtime (llm glob + ai_answer slot) is CODE-OWNED and lives in
+        # ai.jac, written at scaffold time — never in the model's repair canvas.
+        # The decl only carries two grammar-clean lines: the import + the walker.
         for d in sk.decls {
             if ".impl." in d.path { continue; }
-            if "walker ask_ai" not in d.source {
-                nt_ai = _derive_node_name(plan);
-                header_ai = "import from jaclang.byllm.lib { Model }\n"
-                    + "import os;\n"
-                    + "import json;\n\n"
-                    + "# the app's AI follows your jac-mini-coder model choice: env first\n"
-                    + "# (JAC_AI_MODEL / JAC_AI_API_KEY / JAC_AI_HTTP_BASE), then the saved\n"
-                    + "# ~/.jac-mini-coder/config.json, then local ollama\n"
-                    + "def _ai_conf(field: str) -> str {\n"
-                    + "    try {\n"
-                    + "        with open(os.path.expanduser(\"~/.jac-mini-coder/config.json\")) as f {\n"
-                    + "            return str(json.load(f).get(field, \"\"));\n"
-                    + "        }\n"
-                    + "    } except Exception { return \"\"; }\n"
-                    + "}\n\n"
-                    + "glob AI_HTTP: str = os.environ.get(\"JAC_AI_HTTP_BASE\", os.environ.get(\"JACMINI_HTTP_BASE\", os.environ.get(\"SMITH_HTTP_BASE\", _ai_conf(\"http_base\"))));\n"
-                    + "glob AI_MODEL: str = os.environ.get(\"JAC_AI_MODEL\", \"\") or _ai_conf(\"model\") or \"ollama_chat/gemma4:e4b\";\n"
-                    + "glob AI_KEY: str = os.environ.get(\"JAC_AI_API_KEY\", \"\") or _ai_conf(\"api_key\");\n"
-                    + "glob llm: Model = Model(\n"
-                    + "    model_name=(AI_MODEL.split(\"/\")[-1] if AI_HTTP else AI_MODEL),\n"
-                    + "    api_key=(\"local\" if AI_HTTP else AI_KEY),\n"
-                    + "    config=({\"http_client\": True, \"api_base\": AI_HTTP, \"native_tools\": True} if AI_HTTP else {\"native_tools\": True}),\n"
-                    + "    call_params=({\"think\": False} if AI_MODEL.startswith(\"ollama\") else {})\n"
-                    + ");\n\n"
-                    + "def ai_answer(question: str, context: str) -> str by llm(temperature=0.3);\n"
-                    + "sem ai_answer = \"Answer the user's question using ONLY their data given as context. Be brief and specific; if the context has no answer, say so plainly.\";\n"
-                    + "sem ai_answer.question = \"The user's question.\";\n"
-                    + "sem ai_answer.context = \"The user's stored items, serialized.\";\n\n";
+            if "import from ai {" not in d.source {
+                d.source = "import from ai { ai_answer }\n\n" + d.source.lstrip();
+            }
+            if re.search(r"walker(:pub)?\s+ask_ai\b", d.source) is None {
                 kw_ai = "walker" if ACCESS else "walker:pub";
-                d.source = header_ai + d.source.rstrip()
+                d.source = d.source.rstrip()
                     + "\n\n" + kw_ai + " ask_ai {\n    has question: str = \"\";\n    has reports: list[str] = [];\n    can run with Root entry;\n}\n";
             }
         }
@@ -1023,6 +1007,26 @@ def block_template(sig: str, decl_src: str) -> str {
     if m is None { return ""; }
     wname = str(m.group(1));
     node_t = str(m.group(3));
+    # harness-owned walkers dispatch BEFORE any generic heuristic — ask_ai has
+    # a has-field, so the write-run template would otherwise claim it
+    if sig.strip().startswith("impl ask_ai.run") {
+        nt4 = _first_node_type(decl_src);
+        ser = "str(n)";
+        return header + " { "
+            + "parts: list[str] = []; "
+            + "for n in [here -->][?:" + nt4 + "] { parts.append(" + ser + "); } "
+            + "ctx = \"; \".join(parts) if parts else \"(no items yet)\"; "
+            + "report ai_answer(self.question, ctx); }";
+    }
+    if sig.strip().startswith("impl claim_admin.run") {
+        return header + " { "
+            + "for r in allroots() { for a in [r -->][?:Account] { "
+            + "if a.role == \"admin\" and jid(r) != jid(here) { report \"taken\"; skip; } } } "
+            + "accts = [here -->][?:Account]; "
+            + "if len(accts) > 0 { accts[0].role = \"admin\"; } "
+            + "else { here ++> Account(role=\"admin\"); } "
+            + "report \"ok\"; }";
+    }
     if node_t != "Root" {
         # collector on a read walker: exactly `report here;`
         if _is_read_endpoint(wname) { return header + " { report here; }"; }
@@ -1085,24 +1089,6 @@ def block_template(sig: str, decl_src: str) -> str {
                 + "for n in [root.shared -->][?:" + nt3 + "] { del n; } "
                 + "report \"cleared\"; }";
         }
-    }
-    if sig.strip().startswith("impl ask_ai.run") {
-        nt4 = _first_node_type(decl_src);
-        ser = "str(n)";
-        return header + " { "
-            + "parts: list[str] = []; "
-            + "for n in [here -->][?:" + nt4 + "] { parts.append(" + ser + "); } "
-            + "ctx = \"; \".join(parts) if parts else \"(no items yet)\"; "
-            + "report ai_answer(self.question, ctx); }";
-    }
-    if sig.strip().startswith("impl claim_admin.run") {
-        return header + " { "
-            + "for r in allroots() { for a in [r -->][?:Account] { "
-            + "if a.role == \"admin\" and jid(r) != jid(here) { report \"taken\"; skip; } } } "
-            + "accts = [here -->][?:Account]; "
-            + "if len(accts) > 0 { accts[0].role = \"admin\"; } "
-            + "else { here ++> Account(role=\"admin\"); } "
-            + "report \"ok\"; }";
     }
     return "";
 }
