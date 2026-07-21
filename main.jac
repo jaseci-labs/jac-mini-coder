@@ -57,11 +57,13 @@ def render_event(rec: dict) {
 
 def configure_model(spec: str, http_base: str) {
     if http_base {
-        jacsmith.llm = Model(
+        m = Model(
             model_name=(spec.split("/")[-1] if spec else "gemma4:e4b"),
             api_key="local",
             config={"http_client": True, "api_base": http_base, "native_tools": True}
         );
+        jacsmith.llm = m;
+        fullstack.llm = m;
     } elif spec {
         jacsmith.llm = Model(
             model_name=spec,

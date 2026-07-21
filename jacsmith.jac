@@ -768,6 +768,11 @@ def force_stub_file(sk: Skeleton, plan: BuildPlan) {
             }
         }
     }
+    if not [d for d in sk.decls if d.path == DECL_FILE] {
+        # no usable decl surface came back at all — give the mechanical
+        # synthesis an empty canvas; node/walker synth builds it from the plan
+        sk.decls.append(DeclFile(path=DECL_FILE, role=FileRole.DECL, source=""));
+    }
     sk.decls = [d for d in sk.decls if d.path == DECL_FILE];
     # a walker referencing an undeclared node type is a one-decl omission —
     # synthesize the node from the union of endpoint payload fields

@@ -34,11 +34,13 @@ with entry {
         # (byllm_adapter.py -> ollama). Used where the embedded runtime's
         # litellm transport segfaults (glibc 2.39 hosts); the adapter also
         # forces think=false and flattens parts-list content.
-        jacsmith.llm = Model(
+        m = Model(
             model_name=(spec.split("/")[-1] if spec else "gemma4:e4b"),
             api_key="local",
             config={"http_client": True, "api_base": http_base, "native_tools": True}
         );
+        jacsmith.llm = m;
+        fullstack.llm = m;
     } elif spec {
         base = os.environ.get("SMITH_BASE_URL", "");
         # native_tools=True defuses byllm's gemma name-sniff (whose tool-call
@@ -47,9 +49,11 @@ with entry {
         # [plugins.byllm.model] section is not consulted for runtime-built Models.
         cfg: dict = {"native_tools": True};
         if base { cfg["api_base"] = base; }
-        jacsmith.llm = Model(
+        m2 = Model(
             model_name=spec, config=cfg, call_params={"think": False}
         );
+        jacsmith.llm = m2;
+        fullstack.llm = m2;
     }
 
     if (not dry) and (not os.path.exists(work_dir)) {

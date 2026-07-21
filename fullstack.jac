@@ -19,6 +19,12 @@ import from jaclang.byllm.lib { Model, Image }
 
 glob JAC: str = os.path.expanduser("~/.local/bin/jac");
 
+glob llm: Model = Model(
+    model_name="ollama_chat/gemma4:e4b",
+    config={"native_tools": True},
+    call_params={"think": False}
+);
+
 glob STYLE_JUDGMENT: str =
 "You are judging/writing UI with real design standards. A NICE page has: one clear "
 "visual hierarchy (a strong title, quieter supporting text); an 8px spacing rhythm; "
