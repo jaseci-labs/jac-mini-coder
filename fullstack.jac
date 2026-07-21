@@ -86,9 +86,12 @@ sem restyle_css.issues = "The visual issues to fix, plus the design standards.";
 # ---- template derivation (owner=code) --------------------------------------
 
 def plan_fields(plan: jacsmith.BuildPlan) -> list[str] {
+    # the UI's form maps to the PRIMARY write endpoint only — mixing payloads
+    # from several writes produced forms referencing fields the node lacks
     out: list[str] = [];
+    wname = write_walker_name(plan);
     for e in plan.endpoints {
-        if jacsmith._is_read_endpoint(e.name) { continue; }
+        if e.name != wname { continue; }
         try {
             pd = json.loads(e.example_json);
             for k in pd.keys() {
@@ -141,7 +144,20 @@ def render_style_css(accent: str) -> str {
         ".card strong { font-size: 15.5px; }",
         ".card span { color: var(--muted); font-size: 14px; }",
         ".empty { border: 1.5px dashed var(--line); border-radius: var(--radius); padding: 32px 16px;",
-        "  text-align: center; color: var(--muted); }"
+        "  text-align: center; color: var(--muted); }",
+        ".auth-card { display: flex; flex-direction: column; gap: 10px; background: var(--card);",
+        "  border: 1px solid var(--line); border-radius: var(--radius); padding: 24px; max-width: 360px; }",
+        ".auth-card input { padding: 10px 12px; font-size: 15px; border: 1px solid var(--line);",
+        "  border-radius: var(--radius); }",
+        ".auth-card input:focus { outline: 2px solid var(--accent); outline-offset: 1px; }",
+        ".auth-row { display: flex; gap: 8px; }",
+        ".auth-row button { flex: 1; padding: 10px 14px; font-size: 15px; font-weight: 600;",
+        "  border-radius: var(--radius); cursor: pointer; border: 1px solid var(--accent); }",
+        ".auth-row button[type=submit] { background: var(--accent); color: #fff; }",
+        ".auth-row button[type=button] { background: var(--card); color: var(--accent); }",
+        ".auth-msg { color: #b4232a; font-size: 14px; margin: 0; }",
+        ".logout { float: right; margin-top: -56px; background: none; border: 1px solid var(--line);",
+        "  border-radius: var(--radius); padding: 6px 12px; color: var(--muted); cursor: pointer; }"
     ];
     return NL.join(lines) + NL;
 }
@@ -154,29 +170,48 @@ def css_one_line(css: str) -> str {
     return s.strip();
 }
 
-def render_frontend_cl(plan: jacsmith.BuildPlan, copy: UiCopy) -> str {
+def render_frontend_cl(plan: jacsmith.BuildPlan, copy: UiCopy, auth: bool = False, nt: str = "") -> str {
     fields = plan_fields(plan);
-    node_t = jacsmith._derive_node_name(plan);
+    node_t = nt if nt else jacsmith._derive_node_name(plan);
     wname = write_walker_name(plan);
     lname = list_walker_name(plan);
     q = DQ;
     L: list[str] = [];
     L.append(q + q + q + copy.title + " — client UI." + q + q + q);
     L.append("");
+    if auth {
+        L.append("import from " + q + "@jac/runtime" + q + " { jacLogin, jacSignup, jacLogout, jacIsLoggedIn }");
+    }
     L.append("sv import from endpoints { " + node_t + ", " + wname + ", " + lname + " }");
     L.append("");
     L.append("glob PAGE_CSS: str = " + q + css_one_line(render_style_css(accent_for(plan.name))) + q + ";");
     L.append("");
     L.append("def:pub app -> JsxElement {");
     L.append("    has items: list[" + node_t + "] = [];");
+    if auth {
+        L.append("    has authed: bool = False;");
+        L.append("    has email: str = " + q + q + ";");
+        L.append("    has password: str = " + q + q + ";");
+        L.append("    has auth_msg: str = " + q + q + ";");
+    }
     for f in fields { L.append("    has " + f + ": str = " + q + q + ";"); }
     L.append("");
     L.append("    can with entry {");
-    L.append("        loadItems();");
+    if auth {
+        L.append("        authed = jacIsLoggedIn();");
+        L.append("        if authed { loadItems(); }");
+    } else {
+        L.append("        loadItems();");
+    }
     L.append("    }");
     L.append("");
     L.append("    async def loadItems -> None;");
     L.append("    async def submitItem(e: FormEvent) -> None;");
+    if auth {
+        L.append("    async def doLogin(e: FormEvent) -> None;");
+        L.append("    async def doSignup -> None;");
+        L.append("    def doLogout(e: MouseEvent);");
+    }
     L.append("");
     L.append("    return <div className=" + q + "shell" + q + ">");
     L.append("        <style>{PAGE_CSS}</style>");
@@ -184,6 +219,27 @@ def render_frontend_cl(plan: jacsmith.BuildPlan, copy: UiCopy) -> str {
     L.append("            <h1>" + copy.title + "</h1>");
     L.append("            <p className=" + q + "tagline" + q + ">" + copy.tagline + "</p>");
     L.append("        </header>");
+    if auth {
+        L.append("        {if not authed {");
+        L.append("            <form className=" + q + "auth-card" + q + " onSubmit={doLogin}>");
+        L.append("                <input id=" + q + "a-email" + q + " type=" + q + "text" + q + " value={email}");
+        L.append("                    onChange={lambda (e: ChangeEvent) { email = e.target.value; }}");
+        L.append("                    placeholder=" + q + "Email" + q + " />");
+        L.append("                <input id=" + q + "a-password" + q + " type=" + q + "password" + q + " value={password}");
+        L.append("                    onChange={lambda (e: ChangeEvent) { password = e.target.value; }}");
+        L.append("                    placeholder=" + q + "Password" + q + " />");
+        L.append("                <div className=" + q + "auth-row" + q + ">");
+        L.append("                    <button id=" + q + "a-login" + q + " type=" + q + "submit" + q + ">Log in</button>");
+        L.append("                    <button id=" + q + "a-signup" + q + " type=" + q + "button" + q + " onClick={doSignup}>Sign up</button>");
+        L.append("                </div>");
+        L.append("                {if auth_msg {");
+        L.append("                    <p className=" + q + "auth-msg" + q + ">{auth_msg}</p>");
+        L.append("                }}");
+        L.append("            </form>");
+        L.append("        }}");
+        L.append("        {if authed {");
+        L.append("        <button id=" + q + "logout" + q + " className=" + q + "logout" + q + " onClick={doLogout}>Log out</button>");
+    }
     L.append("        <form className=" + q + "entry-form" + q + " onSubmit={submitItem}>");
     for f in fields {
         ph = f[0].upper() + f[1:];
@@ -194,6 +250,9 @@ def render_frontend_cl(plan: jacsmith.BuildPlan, copy: UiCopy) -> str {
     L.append("            <button id=" + q + "f-submit" + q + " type=" + q + "submit" + q + ">" + copy.submit_label + "</button>");
     L.append("        </form>");
     L.append("        <section className=" + q + "card-list" + q + ">");
+    # (in auth mode the entry form and list render regardless, but every handler
+    #  requires a session — the auth card sits above them until login; simple
+    #  and safe: hide via CSS would be nicer, kept minimal)
     L.append("            {if len(items) == 0 {");
     L.append("                <p className=" + q + "empty" + q + ">" + copy.empty_state + "</p>");
     L.append("                skip;");
@@ -204,12 +263,13 @@ def render_frontend_cl(plan: jacsmith.BuildPlan, copy: UiCopy) -> str {
     L.append("                <article key={str(i)} className=" + q + "card" + q + ">" + card + "</article>");
     L.append("            }}");
     L.append("        </section>");
+    if auth { L.append("        }}"); }
     L.append("    </div>;");
     L.append("}");
     return NL.join(L) + NL;
 }
 
-def render_frontend_impl(plan: jacsmith.BuildPlan) -> str {
+def render_frontend_impl(plan: jacsmith.BuildPlan, auth: bool = False, nt: str = "") -> str {
     fields = plan_fields(plan);
     wname = write_walker_name(plan);
     lname = list_walker_name(plan);
@@ -218,6 +278,32 @@ def render_frontend_impl(plan: jacsmith.BuildPlan) -> str {
     L: list[str] = [];
     L.append(q + q + q + "Frontend handler implementations." + q + q + q);
     L.append("");
+    if auth {
+        L.append("impl app.doLogin(e: FormEvent) -> None {");
+        L.append("    e.preventDefault();");
+        L.append("    ok: bool = False;");
+        L.append("    ok = await jacLogin(email, password);");
+        L.append("    if ok { authed = True; auth_msg = " + q + q + "; loadItems(); }");
+        L.append("    else { auth_msg = " + q + "Invalid credentials." + q + "; }");
+        L.append("}");
+        L.append("");
+        L.append("impl app.doSignup -> None {");
+        L.append("    sres: dict | None = None;");
+        L.append("    ok: bool = False;");
+        L.append("    sres = await jacSignup(email, password);");
+        L.append("    if not sres[" + q + "success" + q + "] { auth_msg = " + q + "Signup failed — that email may be in use." + q + "; return; }");
+        L.append("    ok = await jacLogin(email, password);");
+        L.append("    if ok { authed = True; auth_msg = " + q + q + "; loadItems(); }");
+        L.append("    else { auth_msg = " + q + "Login after signup failed." + q + "; }");
+        L.append("}");
+        L.append("");
+        L.append("impl app.doLogout(e: MouseEvent) {");
+        L.append("    jacLogout();");
+        L.append("    authed = False;");
+        L.append("    items = [];");
+        L.append("}");
+        L.append("");
+    }
     L.append("impl app.loadItems -> None {");
     L.append("    result = root spawn " + lname + "();");
     L.append("    items = result.reports;");
@@ -234,10 +320,14 @@ def render_frontend_impl(plan: jacsmith.BuildPlan) -> str {
     return NL.join(L) + NL;
 }
 
-def render_main_entry(plan: jacsmith.BuildPlan, copy: UiCopy) -> str {
-    node_t = jacsmith._derive_node_name(plan);
+def render_main_entry(plan: jacsmith.BuildPlan, copy: UiCopy, nt: str = "") -> str {
+    node_t = nt if nt else jacsmith._derive_node_name(plan);
     q = DQ;
     wnames = ", ".join([e.name for e in plan.endpoints]);
+    if jacsmith.ACCESS and ("admin" in [jacsmith.ACCESS.get(e.name, "") for e in plan.endpoints]) {
+        # code-injected walkers must be entry-imported or they never register
+        wnames = wnames + ", claim_admin";
+    }
     L: list[str] = [];
     L.append(q + q + q + copy.title + " — entry point." + q + q + q);
     L.append("");
@@ -254,6 +344,122 @@ def render_main_entry(plan: jacsmith.BuildPlan, copy: UiCopy) -> str {
 }
 
 
+# ---- the two-user multi-user REST gate (owner=code) ------------------------
+
+def _mu_user(base: str, uname: str) -> str {
+    jacsmith._curl_json(base + "/user/register",
+        '{"identities":[{"type":"username","value":"' + uname + '"}],"credential":{"type":"password","password":"mupw12345"}}');
+    login = jacsmith._curl_json(base + "/user/login",
+        '{"identity":{"type":"username","value":"' + uname + '"},"credential":{"type":"password","password":"mupw12345"}}');
+    try { return json.loads(login)["data"]["token"]; } except Exception { return ""; }
+}
+
+"""Serve the app and assert the MULTI-USER contract with two real users:
+private data must NOT cross user roots; shared data MUST; admin actions gate
+on the claimed role. All derived from the plan + access map — no model."""
+def gate_mu(project_dir: str, plan: jacsmith.BuildPlan, access: dict[str, str],
+            dry: bool, wait_s: int = 240) -> jacsmith.CheckResult {
+    if dry { return jacsmith.CheckResult(ok=True, errors=""); }
+    base = "http://localhost:" + str(jacsmith.SERVE_PORT);
+    subprocess.run(["pkill", "-f", "jac start .* --port " + str(jacsmith.SERVE_PORT)], capture_output=True);
+    srv = subprocess.Popen([JAC, "start", jacsmith.ENTRY_FILE, "--port", str(jacsmith.SERVE_PORT)],
+                           cwd=project_dir, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL);
+    try {
+        up = False;
+        for _ in range(wait_s) {
+            time.sleep(1);
+            if jacsmith._curl_json(base + "/user/register", "{}") { up = True; break; }
+        }
+        if not up { return jacsmith.CheckResult(ok=False, errors="MU: server never came up"); }
+        ta = _mu_user(base, "mua");
+        tb = _mu_user(base, "mub");
+        if (not ta) or (not tb) {
+            return jacsmith.CheckResult(ok=False, errors="MU: could not establish two user sessions");
+        }
+        fails: list[str] = [];
+        probes: dict[str, str] = {};
+        # writes as user A
+        for e in plan.endpoints {
+            if jacsmith._is_read_endpoint(e.name) { continue; }
+            acc = access.get(e.name, "priv");
+            if acc == "admin" { continue; }
+            resp = jacsmith._curl_json(base + "/walker/" + e.name, e.example_json, ta);
+            ok = False;
+            try { ok = bool(json.loads(resp).get("ok", False)); }
+            except Exception {}
+            if not ok { fails.append("A write " + e.name + " failed -> " + resp[:200]); }
+            try {
+                pd = json.loads(e.example_json);
+                for k in pd.keys() {
+                    v = pd[k];
+                    if isinstance(v, str) and len(v) >= 3 { probes[e.name] = v; break; }
+                }
+            } except Exception {}
+        }
+        # reads: isolation for priv, commons for shared
+        for e in plan.endpoints {
+            if not jacsmith._is_read_endpoint(e.name) { continue; }
+            acc = access.get(e.name, "priv");
+            ra = jacsmith._curl_json(base + "/walker/" + e.name, "{}", ta);
+            rb = jacsmith._curl_json(base + "/walker/" + e.name, "{}", tb);
+            probe = "";
+            for w in plan.endpoints {
+                if jacsmith._is_read_endpoint(w.name) { continue; }
+                wacc = access.get(w.name, "priv");
+                if (acc == "shared") == (wacc == "shared") and w.name in probes {
+                    probe = probes[w.name];
+                    break;
+                }
+            }
+            if not probe { continue; }
+            if acc == "shared" {
+                if probe not in rb {
+                    fails.append("SHARED " + e.name + ": user B cannot see the commons data '" + probe + "'");
+                }
+            } else {
+                if probe not in ra {
+                    fails.append("PRIV " + e.name + ": owner cannot read back their own '" + probe + "'");
+                }
+                if probe in rb {
+                    fails.append("ISOLATION BREACH " + e.name + ": user B can see user A's private '" + probe + "'");
+                }
+            }
+        }
+        # admin: A claims first, B must be refused; B's admin action forbidden
+        has_admin = "admin" in [access.get(e.name, "") for e in plan.endpoints];
+        if has_admin {
+            ca = jacsmith._curl_json(base + "/walker/claim_admin", "{}", ta);
+            cb = jacsmith._curl_json(base + "/walker/claim_admin", "{}", tb);
+            ca_ok = False;
+            try {
+                ja = json.loads(ca);
+                ca_ok = bool(ja.get("ok", False)) and ('"ok"' in json.dumps(ja.get("data", {})));
+            } except Exception {}
+            if not ca_ok { fails.append("ADMIN: first claim (A) did not succeed -> " + ca[:150]); }
+            if "taken" not in cb { fails.append("ADMIN: second claim (B) was not refused -> " + cb[:150]); }
+            for e in plan.endpoints {
+                if access.get(e.name, "") != "admin" { continue; }
+                rb2 = jacsmith._curl_json(base + "/walker/" + e.name, e.example_json, tb);
+                if "forbidden" not in rb2 {
+                    fails.append("ADMIN " + e.name + ": non-admin B was not refused -> " + rb2[:150]);
+                }
+                ra2 = jacsmith._curl_json(base + "/walker/" + e.name, e.example_json, ta);
+                ok2 = False;
+                try { ok2 = bool(json.loads(ra2).get("ok", False)); }
+                except Exception {}
+                if not ok2 { fails.append("ADMIN " + e.name + ": admin A call failed -> " + ra2[:150]); }
+            }
+        }
+        if fails {
+            return jacsmith.CheckResult(ok=False, errors="MULTI-USER: " + "\n".join(fails));
+        }
+        return jacsmith.CheckResult(ok=True, errors="");
+    } finally {
+        srv.terminate();
+    }
+}
+
+
 # ---- the click-through browser gate (owner=code) ---------------------------
 
 def _browse(args: list[str], cwd: str) -> str {
@@ -264,7 +470,7 @@ def _browse(args: list[str], cwd: str) -> str {
 """Drive the real rendered app: open, FILL the form with the plan's example
 payload via the template's stable ids, CLICK submit, assert the written value
 appears in the page, then screenshot the populated page for the vision judge."""
-def gate_ui(project_dir: str, plan: jacsmith.BuildPlan, shot_path: str, dry: bool) -> jacsmith.CheckResult {
+def gate_ui(project_dir: str, plan: jacsmith.BuildPlan, shot_path: str, dry: bool, auth: bool = False) -> jacsmith.CheckResult {
     if dry { return jacsmith.CheckResult(ok=True, errors=""); }
     base = "http://localhost:" + str(jacsmith.SERVE_PORT);
     fields = plan_fields(plan);
@@ -277,6 +483,18 @@ def gate_ui(project_dir: str, plan: jacsmith.BuildPlan, shot_path: str, dry: boo
     }
     try {
         _browse(["open", base], project_dir);
+        if auth {
+            wa = _browse(["wait", "#a-email"], project_dir);
+            if ("error" in wa.lower()) and ("time" in wa.lower()) {
+                _browse(["close"], project_dir);
+                return jacsmith.CheckResult(ok=False,
+                    errors="UI: auth card never appeared: " + wa[:300]);
+            }
+            _browse(["fill", "#a-email", "uiuser@example.com"], project_dir);
+            _browse(["fill", "#a-password", "uipw12345"], project_dir);
+            _browse(["click", "#a-signup"], project_dir);
+            time.sleep(2);
+        }
         w = _browse(["wait", "#f-submit"], project_dir);
         if ("error" in w.lower()) and ("time" in w.lower()) {
             _browse(["close"], project_dir);
@@ -315,6 +533,8 @@ walker build_fullstack {
     has plan: jacsmith.BuildPlan = jacsmith.BuildPlan();
     has skeleton: jacsmith.Skeleton = jacsmith.Skeleton();
     has copy: UiCopy = UiCopy();
+    has auth_mode: bool = False;
+    has access: dict[str, str] = {};
     has budget: int = 3;
     has dry_run: bool = False;
     has blocks: dict[str, str] = {};
@@ -339,6 +559,13 @@ walker build_fullstack {
         }
         if not self.copy.title { self.copy.title = self.plan.name; }
         if not self.copy.submit_label { self.copy.submit_label = "Add"; }
+        self.auth_mode = wants_auth(self.task);
+        if self.auth_mode {
+            self.access = derive_access(self.plan, self.task);
+            jacsmith.ACCESS = self.access;
+            jacsmith._trace({"station": "plan", "kind": "slot", "slot": "access_map",
+                             "output": self.access});
+        }
         jacsmith._trace({"station": "plan", "kind": "slot", "slot": "style_copy",
                          "output": {"title": self.copy.title, "tagline": self.copy.tagline}});
         s1 = here ++> jacsmith.ScaffoldSt();
@@ -364,8 +591,8 @@ walker build_fullstack {
             jacsmith._write(self.project_dir, "plan.json",
                             json.dumps(jacsmith._plan_dict(self.plan), indent=1));
             jacsmith._write(self.project_dir, "main.jac", render_main_entry(self.plan, self.copy));
-            jacsmith._write(self.project_dir, "frontend.cl.jac", render_frontend_cl(self.plan, self.copy));
-            jacsmith._write(self.project_dir, "frontend.impl.jac", render_frontend_impl(self.plan));
+            jacsmith._write(self.project_dir, "frontend.cl.jac", render_frontend_cl(self.plan, self.copy, self.auth_mode));
+            jacsmith._write(self.project_dir, "frontend.impl.jac", render_frontend_impl(self.plan, self.auth_mode));
             jacsmith._write(self.project_dir, "frontend.css",
                             render_style_css(accent_for(self.plan.name)));
             mc = os.path.join(self.project_dir, "components", "MessageCard.cl.jac");
@@ -411,6 +638,20 @@ walker build_fullstack {
             self.outcome.append(jacsmith.BuildResult(ok=False, stage="decl", message=res.errors, files=self.log));
             disengage;
         }
+        # the decl is now ground truth — re-render the frontend trio with the
+        # ACTUAL node name (the model may not have named it as derived)
+        if not self.dry_run {
+            decl_src = "";
+            for d in self.skeleton.decls {
+                if ".impl." not in d.path { decl_src = d.source; }
+            }
+            nt_real = jacsmith._first_node_type(decl_src);
+            if nt_real != "Root" {
+                jacsmith._write(self.project_dir, "main.jac", render_main_entry(self.plan, self.copy, nt_real));
+                jacsmith._write(self.project_dir, "frontend.cl.jac", render_frontend_cl(self.plan, self.copy, self.auth_mode, nt_real));
+                jacsmith._write(self.project_dir, "frontend.impl.jac", render_frontend_impl(self.plan, self.auth_mode, nt_real));
+            }
+        }
         visit [-->];
     }
 
@@ -452,7 +693,11 @@ walker build_fullstack {
     # bounded CSS-only refine round ("the switcharoo")
     can do_verify with jacsmith.VerifySt entry {
         self.log.append("verify");
-        res = jacsmith.gate_serve(self.project_dir, self.plan.endpoints, self.dry_run, 240);
+        if self.auth_mode {
+            res = gate_mu(self.project_dir, self.plan, self.access, self.dry_run, 240);
+        } else {
+            res = jacsmith.gate_serve(self.project_dir, self.plan.endpoints, self.dry_run, 240);
+        }
         jacsmith._trace({"station": "verify", "kind": "gate", "gate": "runtime", "round": 0,
                          "gate_ok": res.ok, "gate_errors": res.errors[:2000]});
         if not res.ok {
@@ -467,7 +712,7 @@ walker build_fullstack {
                                    cwd=self.project_dir, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL);
             try {
                 time.sleep(8);
-                ui = gate_ui(self.project_dir, self.plan, shot, self.dry_run);
+                ui = gate_ui(self.project_dir, self.plan, shot, self.dry_run, self.auth_mode);
                 jacsmith._trace({"station": "verify", "kind": "gate", "gate": "ui", "round": 0,
                                  "gate_ok": ui.ok, "gate_errors": ui.errors[:2000]});
                 if not ui.ok {
@@ -533,6 +778,7 @@ walker build_fullstack {
         jacsmith.DECL_FILE = "main.sv.jac";
         jacsmith.IMPL_FILE = "main.sv.impl.jac";
         jacsmith.ENTRY_FILE = "main.sv.jac";
+        jacsmith.ACCESS = {};
         jacsmith._trace({"station": "done", "kind": "run", "gate_ok": True, "path": self.log});
         self.outcome.append(jacsmith.BuildResult(ok=True, stage="done",
             message="fullstack app built, clicked through, and verified", files=self.log));
@@ -546,7 +792,36 @@ def smith_full(task: str, work_dir: str, dry_run: bool = False) -> jacsmith.Buil
     jacsmith.DECL_FILE = "main.sv.jac";
     jacsmith.IMPL_FILE = "main.sv.impl.jac";
     jacsmith.ENTRY_FILE = "main.sv.jac";
+    jacsmith.ACCESS = {};
     return w.outcome[0] if w.outcome else jacsmith.BuildResult(ok=False, stage="none", message="no report");
+}
+
+glob AUTH_WORDS: list[str] = ["auth", "login", "user", "users", "account", "accounts", "multi-user", "signup", "private"];
+glob SHARED_NAME_WORDS: list[str] = ["shared", "team", "board", "feed", "public", "announce"];
+glob ADMIN_NAME_WORDS: list[str] = ["delete", "remove", "clear", "manage", "admin"];
+
+def wants_auth(task: str) -> bool {
+    lowered = " " + task.lower() + " ";
+    return any([(" " + w) in lowered for w in AUTH_WORDS]);
+}
+
+"""Mechanical access classification (owner=code): shared/team vocabulary in the
+endpoint name -> the commons; admin vocabulary (when the task mentions admin)
+-> role-gated; everything else -> private per-user."""
+def derive_access(plan: jacsmith.BuildPlan, task: str) -> dict[str, str] {
+    m: dict[str, str] = {};
+    t = task.lower();
+    for e in plan.endpoints {
+        nl = e.name.lower();
+        if ("admin" in t) and any([w in nl for w in ADMIN_NAME_WORDS]) {
+            m[e.name] = "admin";
+        } elif any([w in nl for w in SHARED_NAME_WORDS]) {
+            m[e.name] = "shared";
+        } else {
+            m[e.name] = "priv";
+        }
+    }
+    return m;
 }
 
 glob FRONT_WORDS: list[str] = ["ui", "frontend", "front-end", "web app", "webapp", "page", "website", "fullstack", "full-stack", "interface"];

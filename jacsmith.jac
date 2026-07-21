@@ -26,6 +26,24 @@ glob JAC: str = os.path.expanduser("~/.local/bin/jac");
 # Backend file targets. The service layout uses main.sv.jac; the fullstack
 # (web-app) layout keeps walkers in endpoints.sv.jac with main.jac as the
 # mixed entry. build_fullstack swaps these for a run and restores them after.
+# Access map for multi-user builds: endpoint name -> "pub" | "priv" | "shared"
+# | "admin". Empty map = legacy single-user mode (walker:pub everywhere).
+glob ACCESS: dict[str, str] = {};
+
+# AI mode: the generated app itself gets a by-llm slot (ask_ai walker grounded
+# in the user's own graph data), an env-aware Model glob, and byllm config.
+glob AI_MODE: bool = False;
+
+def _acc(name: str) -> str {
+    return ACCESS.get(name, "pub") if ACCESS else "pub";
+}
+
+def _walker_kw(name: str) -> str {
+    # authenticated walkers are plain `walker` (per-user root isolation);
+    # only true public endpoints stay :pub
+    return "walker:pub " if _acc(name) == "pub" else "walker ";
+}
+
 glob DECL_FILE: str = "main.sv.jac";
 glob IMPL_FILE: str = "main.sv.impl.jac";
 glob ENTRY_FILE: str = "main.sv.jac";
@@ -366,6 +384,36 @@ def mechanical_decl_repair(sk: Skeleton, plan: BuildPlan, errors: str) -> bool {
             changed = True;
         }
         node_t = _first_node_type(d.source);
+        # NODE-FIELD COMPLETENESS: every payload field across all endpoints must
+        # exist on the node — walker templates construct with them
+        if node_t != "Root" {
+            m2 = re.search(r"(?m)^\s*node\s+" + node_t + r"\s*\{([\s\S]*?)\}", d.source);
+            if m2 {
+                body2 = str(m2.group(1));
+                missing_f = "";
+                seen2: list[str] = [];
+                for e in plan.endpoints {
+                    try {
+                        pd2 = json.loads(e.example_json);
+                        for k in pd2.keys() {
+                            kk = str(k);
+                            if kk == "reports" or kk in seen2 { continue; }
+                            seen2.append(kk);
+                            if re.search(r"\bhas\s+" + kk + r"\s*:", body2) is None {
+                                t2 = _json_type(pd2[k]);
+                                dflt2 = " = \"\"" if t2 == "str" else (" = 0" if t2 in ["int", "float"] else " = []");
+                                missing_f = missing_f + "    has " + kk + ": " + t2 + dflt2 + ";\n";
+                            }
+                        }
+                    } except Exception {}
+                }
+                if missing_f {
+                    d.source = d.source.replace(str(m2.group(0)),
+                        "node " + node_t + " {\n" + body2.rstrip() + "\n" + missing_f + "}", 1);
+                    changed = True;
+                }
+            }
+        }
         # COMPLETENESS: synthesize a missing walker:pub from its EndpointSpec
         for e in plan.endpoints {
             if ("walker:pub " + e.name) in d.source { continue; }
@@ -381,7 +429,7 @@ def mechanical_decl_repair(sk: Skeleton, plan: BuildPlan, errors: str) -> bool {
                 }
             } except Exception {}
             collector = ("    can collect with " + node_t + " entry;\n") if _is_read_endpoint(e.name) else "";
-            d.source = d.source.rstrip() + "\n\nwalker:pub " + e.name + " {\n" + fields
+            d.source = d.source.rstrip() + "\n\n" + _walker_kw(e.name) + e.name + " {\n" + fields
                 + "    has reports: list[" + node_t + "] = [];\n"
                 + "    can run with Root entry;\n" + collector + "}\n";
             changed = True;
@@ -742,7 +790,8 @@ def gate_read_shape(sk: Skeleton) -> CheckResult {
 Tight typed scoping silently drops deliverables nothing carries — this catches it."""
 def gate_completeness(plan: BuildPlan, sk: Skeleton) -> CheckResult {
     decls = render_decls(sk);
-    missing = [e.name for e in plan.endpoints if ("walker:pub " + e.name) not in decls];
+    missing = [e.name for e in plan.endpoints
+               if re.search(r"walker(?::pub)?\s+" + e.name + r"\b", decls) is None];
     if missing {
         return CheckResult(
             ok=False,
@@ -796,6 +845,64 @@ def force_stub_file(sk: Skeleton, plan: BuildPlan) {
             }
             d.source = "node " + ntn + " {\n" + fields + "}\n\n" + d.source;
         }
+    }
+    if ACCESS {
+        for d in sk.decls {
+            if ".impl." in d.path { continue; }
+            for e in plan.endpoints {
+                if ACCESS.get(e.name, "pub") != "pub" {
+                    d.source = d.source.replace("walker:pub " + e.name, "walker " + e.name);
+                }
+            }
+        }
+    }
+    if AI_MODE {
+        for d in sk.decls {
+            if ".impl." in d.path { continue; }
+            if "walker ask_ai" not in d.source {
+                nt_ai = _derive_node_name(plan);
+                header_ai = "import from jaclang.byllm.lib { Model }\n"
+                    + "import os;\n\n"
+                    + "# local-first model wiring, with the http-adapter fallback for hosts\n"
+                    + "# where the embedded runtime cannot use litellm's live transport\n"
+                    + "glob AI_HTTP: str = os.environ.get(\"JAC_AI_HTTP_BASE\", os.environ.get(\"SMITH_HTTP_BASE\", \"\"));\n"
+                    + "glob llm: Model = Model(\n"
+                    + "    model_name=(\"gemma4:e4b\" if AI_HTTP else \"ollama_chat/gemma4:e4b\"),\n"
+                    + "    api_key=(\"local\" if AI_HTTP else \"\"),\n"
+                    + "    config=({\"http_client\": True, \"api_base\": AI_HTTP, \"native_tools\": True} if AI_HTTP else {\"native_tools\": True}),\n"
+                    + "    call_params={\"think\": False}\n"
+                    + ");\n\n"
+                    + "def ai_answer(question: str, context: str) -> str by llm(temperature=0.3);\n"
+                    + "sem ai_answer = \"Answer the user's question using ONLY their data given as context. Be brief and specific; if the context has no answer, say so plainly.\";\n"
+                    + "sem ai_answer.question = \"The user's question.\";\n"
+                    + "sem ai_answer.context = \"The user's stored items, serialized.\";\n\n";
+                d.source = header_ai + d.source.rstrip()
+                    + "\n\nwalker ask_ai {\n    has question: str = \"\";\n    has reports: list[str] = [];\n    can run with Root entry;\n}\n";
+            }
+        }
+    }
+    if ACCESS and ("admin" in [ACCESS.get(e.name, "") for e in plan.endpoints]) {
+        for d in sk.decls {
+            if ".impl." in d.path { continue; }
+            if re.search(r"(?m)^\s*node\s+Account\b", d.source) is None {
+                # APPEND — Account must never become the first (domain) node
+                d.source = d.source.rstrip() + "\n\nnode Account { has role: str = \"member\"; }\n";
+            }
+            if re.search(r"walker\s+claim_admin\b", d.source) is None {
+                d.source = d.source.rstrip()
+                    + "\n\nwalker claim_admin {\n    has reports: list[str] = [];\n    can run with Root entry;\n}\n";
+            }
+        }
+    }
+    # DEFAULT-ENFORCEMENT: every node has-field carries a default so partial
+    # constructors (templates fill only their own walker's fields) always compile
+    for d in sk.decls {
+        if ".impl." in d.path { continue; }
+        d.source = re.sub(r"(?m)^(\s*has\s+\w+\s*:\s*str)\s*;", r"\1 = \"\";", d.source);
+        d.source = re.sub(r"(?m)^(\s*has\s+\w+\s*:\s*int)\s*;", r"\1 = 0;", d.source);
+        d.source = re.sub(r"(?m)^(\s*has\s+\w+\s*:\s*float)\s*;", r"\1 = 0.0;", d.source);
+        d.source = re.sub(r"(?m)^(\s*has\s+\w+\s*:\s*bool)\s*;", r"\1 = False;", d.source);
+        d.source = re.sub(r"(?m)^(\s*has\s+\w+\s*:\s*list\[[^\]]+\])\s*;", r"\1 = [];", d.source);
     }
     stub_src = synth_stub_impls(sk);
     sk.decls = [d for d in sk.decls if d.path != IMPL_FILE];
@@ -909,12 +1016,17 @@ def block_template(sig: str, decl_src: str) -> str {
         if _is_read_endpoint(wname) { return header + " { report here; }"; }
         return "";
     }
+    acc = _acc(wname);
     if _is_read_endpoint(wname) {
+        nt = _first_node_type(decl_src);
+        if acc == "shared" and nt != "Root" {
+            # commons read: one traversal of root.shared, no collector needed
+            return header + " { for n in [root.shared -->][?:" + nt + "] { report n; } }";
+        }
         if walker_has_collector(decl_src, wname) {
             return header + " { visit [-->]; }";
         }
         # collector-less read (count-style): report the aggregate directly
-        nt = _first_node_type(decl_src);
         if nt != "Root" { return header + " { report len([here -->][?:" + nt + "]); }"; }
     }
     # standard WRITE-run: the field mapping is the walker's own has-fields —
@@ -934,8 +1046,51 @@ def block_template(sig: str, decl_src: str) -> str {
         }
         if fields {
             args = ", ".join([f + "=self." + f for f in fields]);
-            return header + " { report here ++> " + nt + "(" + args + "); }";
+            acc2 = _acc(wname);
+            guard = "";
+            if acc2 == "admin" {
+                guard = "accts = [here -->][?:Account]; "
+                    + "if not (len(accts) > 0 and accts[0].role == \"admin\") "
+                    + "{ report \"forbidden\"; skip; } ";
+            }
+            if acc2 == "shared" {
+                # commons write: attach to root.shared and open it to readers
+                return header + " { " + guard + "fresh = root.shared ++> " + nt + "(" + args + "); "
+                    + "grant(fresh, level=ReadPerm); report fresh; }";
+            }
+            return header + " { " + guard + "report here ++> " + nt + "(" + args + "); }";
         }
+    }
+    acc3 = _acc(wname);
+    if acc3 == "admin" {
+        # field-less admin action (clear_x / delete_x): role guard + commons purge
+        nt3 = _first_node_type(decl_src);
+        if nt3 != "Root" {
+            return header + " { "
+                + "accts = [here -->][?:Account]; "
+                + "if not (len(accts) > 0 and accts[0].role == \"admin\") "
+                + "{ report \"forbidden\"; skip; } "
+                + "for n in [root.shared -->][?:" + nt3 + "] { del n; } "
+                + "report \"cleared\"; }";
+        }
+    }
+    if sig.strip().startswith("impl ask_ai.run") {
+        nt4 = _first_node_type(decl_src);
+        ser = "str(n)";
+        return header + " { "
+            + "parts: list[str] = []; "
+            + "for n in [here -->][?:" + nt4 + "] { parts.append(" + ser + "); } "
+            + "ctx = \"; \".join(parts) if parts else \"(no items yet)\"; "
+            + "report ai_answer(self.question, ctx); }";
+    }
+    if sig.strip().startswith("impl claim_admin.run") {
+        return header + " { "
+            + "for r in allroots() { for a in [r -->][?:Account] { "
+            + "if a.role == \"admin\" and jid(r) != jid(here) { report \"taken\"; skip; } } } "
+            + "accts = [here -->][?:Account]; "
+            + "if len(accts) > 0 { accts[0].role = \"admin\"; } "
+            + "else { here ++> Account(role=\"admin\"); } "
+            + "report \"ok\"; }";
     }
     return "";
 }
