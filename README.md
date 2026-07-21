@@ -1,18 +1,20 @@
 # ⚒ jac-mini-coder
 
-**A Jac coding agent small enough for small models.**
+**Write Jac with your local model. No cloud, no API keys.**
 
-Most coding agents are an open ReAct loop: a big model, a big tool menu, and a
-prompt full of instructions the model is trusted to follow. A small local model
-gets lost in that loop. jac-mini-coder inverts it: **the procedure is the
-program**. Each task class is a compiled task-graph — mandatory stations the
-agent *must* visit — and the model's role shrinks to a handful of typed,
-scoped slots. Everything else is code: scaffolding, stub synthesis, file
-assembly, verification, and most repairs.
+Most coding agents are an open ReAct loop: a big hosted model, a big tool
+menu, and a prompt full of instructions the model is trusted to follow. A
+small local model gets lost in that loop — so "local coding agent" usually
+means "worse coding agent."
 
-The result: **gemma4:e4b (a ~4B local model) builds, extends, and fixes
-served-and-verified Jac backends at parity with a frontier teacher** — ~20 s
-per build, no fine-tuning, no cloud requirement for execution.
+jac-mini-coder inverts the design: **the procedure is the program**. Each task
+class is a compiled task-graph — mandatory stations the run *must* visit — and
+the model's role shrinks to a handful of typed, scoped slots. Everything else
+is code: scaffolding, stub synthesis, standard-block templates, file assembly,
+verification, and most repairs. The harness carries the discipline, so a ~4B
+model running on your own machine via [ollama](https://ollama.com) produces
+**served-and-verified Jac backends in ~20 seconds** — and when it can't, the
+gates say so honestly instead of shipping something broken.
 
 ```
 ⚒ > Build a tiny notes API: create_note(title, body) and list_notes endpoints.
@@ -28,6 +30,26 @@ route → build_backend
 OK backend built and verified
 ```
 
+## Quickstart
+
+Requires the native [`jac`](https://www.jac-lang.org) binary and
+[ollama](https://ollama.com).
+
+```bash
+ollama pull gemma4:e4b
+
+git clone https://github.com/jaseci-labs/jac-mini-coder.git && cd jac-mini-coder
+jac install
+jac run main.jac
+```
+
+That's it — type what you want built. TUI commands: `/model <spec>` ·
+`/dir <path>` · `/quit`; anything else is a task. Headless:
+`jac run cli.jac -- "<task>" <workspace>`.
+
+Any ollama model works via `/model ollama_chat/<name>`. The default is
+`gemma4:e4b` (~10 GB, runs on a single consumer GPU or Apple silicon).
+
 ## How it works
 
 ```
@@ -36,48 +58,42 @@ task ─→ route (code) ─→ ┌ build_backend   plan → scaffold → declar
                         └ fix_bug         sense → reproduce (gates as red-check) → repair → verify
 ```
 
-- **Typed slots, scoped context.** The model fills a typed `BuildPlan`, a
-  decl surface, and (rarely) an impl block — each call sees only its own
-  slice plus a shape-specific micro-guide. No tool menu, no "what next".
+- **Typed slots, scoped context.** The model fills a typed plan, a declaration
+  surface, and (rarely) an impl block — each call sees only its own slice plus
+  a shape-specific micro-guide. No tool menu, no "what next".
 - **Templates first.** Standard blocks (collectors, read-traversals, counts,
-  and the create block's field mapping) are **code-authored** from the plan
-  and declarations. On standard CRUD the model authors *zero* impl blocks.
-- **A gate ladder that genuinely goes red.** Lints (dialect drift, detached
-  nodes, input clobbering) → decl completeness/shape → `jac check` →
-  full build → **live serve**: register, call every planned endpoint with its
-  example payload, and require reads to surface what writes created.
+  create-with-fields) are **code-authored** from the plan and declarations. On
+  standard CRUD the model writes *zero* implementation code.
+- **A gate ladder that genuinely goes red.** Dialect lints → declaration
+  completeness/shape → `jac check` → full build → **live serve**: register,
+  call every planned endpoint with its example payload, and require reads to
+  surface what writes created.
 - **Mechanical repair before model repair.** A missing walker is synthesized
-  from its own endpoint spec; a missing node from the payload fields; junk
-  text is scrubbed. The model only repairs what code cannot derive — with
+  from its own endpoint spec, a missing node from the payload fields, junk
+  text is scrubbed — the model only repairs what code cannot derive, seeing
   only the error lines that concern its block.
-- **Every run emits training data.** Slot inputs/outputs + gate verdicts
-  stream to a JSONL trace; `gen_pairs.jac` turns traces into gate-labeled
-  pairs (green = SFT gold, red→green = preference pairs).
 
-## Quickstart
+## Reliability
 
-Requires the native [`jac`](https://www.jac-lang.org) binary and, for local
-execution, [ollama](https://ollama.com).
+Same build task, N=5 runs of `gemma4:e4b`, as the harness absorbed one
+observed failure class per revision (no prompt tuning, no fine-tuning):
 
-```bash
-git clone https://github.com/jaseci-labs/jac-mini-coder.git && cd jac-mini-coder
-jac install
+| harness revision | result |
+|---|---|
+| open-loop baseline | 0/5 |
+| + impl gates, live scenario assertion | 1/5 |
+| + per-block fills, micro-compile acceptance | 1/5 |
+| + templates, mechanical decl repair | **5/5, ~20 s/run** |
 
-# with a frontier model (teacher):
-export OPENAI_API_KEY=sk-...
-jac run main.jac
+Generalizes across CRUD shapes (todo / bookmarks / inventory / contacts /
+events APIs all green), mutates live projects (`add_endpoint`
+regression-verifies every existing endpoint), and `fix_bug` reproduces via the
+gate ladder before touching anything — answering "gates are green, could not
+reproduce" rather than inventing a fix.
 
-# with a small local model (student):
-ollama pull gemma4:e4b
-SMITH_MODEL=ollama_chat/gemma4:e4b jac run main.jac
-```
+## Gemma-family models: two required settings
 
-TUI commands: `/model <spec>` · `/http <base>` · `/dir <path>` · `/quit` —
-anything else is a task. Headless: `jac run cli.jac -- "<task>" <workspace>`.
-
-### Gemma-family models: two required settings
-
-`jac.toml` ships them; if you build your own `Model`, keep both:
+`jac.toml` ships them; if you construct your own `Model`, keep both:
 
 ```toml
 [plugins.byllm.model]
@@ -87,42 +103,24 @@ native_tools = true    # byLLM's gemma tool-call recovery otherwise eats any
 think = false          # gemma's thinking channel otherwise swallows content
 ```
 
-### GPU box bring-up
+## Running on a GPU server
 
-`./box_init.sh ubuntu@HOST` provisions a fresh GPU machine end-to-end: jac
-binary, ollama (ctx 16384), `gemma4:e4b`, project files, and a smoke probe.
-On hosts where the embedded runtime's litellm transport crashes (observed on
-glibc 2.39), it auto-installs `byllm_adapter.py` as a systemd service and
-switches to http mode — then run with
-`SMITH_MODEL=gemma4:e4b SMITH_HTTP_BASE=http://127.0.0.1:11438`.
-
-## Does the structure actually carry the small model?
-
-Same task, N=5 reliability sweeps of gemma4:e4b, as the harness absorbed one
-observed failure class per round (no prompt tuning, no fine-tuning):
-
-| harness revision | student result |
-|---|---|
-| open-loop baseline | 0/5 |
-| + impl gates, scenario assertion | 1/5 |
-| + per-block fills, micro-compile | 1/5 (first zero-repair green) |
-| + templates, mechanical decl repair, scrub | **5/5 — teacher parity, ~20 s/run** |
-
-Generalization: five different CRUD APIs (todo, bookmarks, inventory,
-contacts, events) all green; `add_endpoint` mutates a live project and
-regression-verifies every endpoint; `fix_bug` reproduces via the gate ladder,
-repairs only implicated blocks, and answers honestly when gates can't
-reproduce the report.
+`./box_init.sh ubuntu@HOST` provisions a fresh machine end-to-end: jac binary,
+ollama (ctx 16384), the model, project files, and a smoke probe. On hosts
+where the embedded runtime's litellm transport crashes (observed on glibc
+2.39), it auto-installs `byllm_adapter.py` as a systemd service — then run
+with `SMITH_MODEL=gemma4:e4b SMITH_HTTP_BASE=http://127.0.0.1:11438`, or use
+`/http http://127.0.0.1:11438` in the TUI.
 
 ## Layout
 
 ```
-main.jac            the TUI (rich REPL, live station/gate rendering)
-cli.jac             headless runner (scripts, CI, sweeps)
+main.jac            the TUI (live station/gate rendering)
+cli.jac             headless runner (scripts, CI)
 jacsmith.jac        the engine: task-graphs, slots, templates, gates, repairs
-gen_pairs.jac       traces → gate-labeled training pairs
-byllm_adapter.py    http-mode adapter (small-model boxes)
-box_init.sh         one-command GPU box provisioning
+gen_pairs.jac       run traces → gate-labeled data pairs
+byllm_adapter.py    http-mode adapter (for hosts that need it)
+box_init.sh         one-command GPU server provisioning
 ```
 
 Built with [Jac](https://www.jac-lang.org) — the graphs the agent walks are

@@ -1,16 +1,15 @@
 """jac-mini-coder — a Jac coding agent small enough for small models. ⚒
 
-A standalone TUI over the jacsmith compiled-task-graph engine: the procedure
-(plan → scaffold → declare → implement → verify) is walker topology, cognition
-is a handful of typed byLLM slots, and every stage ends in a code-owned
-red-check. Built so a ~4B local model (gemma4:e4b) reaches parity with a
-frontier teacher — the harness, not the model, carries the discipline.
+A standalone TUI over the jacsmith compiled-task-graph engine. Runs entirely
+on YOUR machine: your local ollama model fills a few typed slots; the harness
+— stations, templates, gates, mechanical repairs — does everything else and
+verifies the result live. No cloud, no API keys, no telemetry.
 
     jac run main.jac                 # interactive TUI (default workspace ./work)
     jac run main.jac -- ./mydir      # pick a workspace
 
 Commands inside the TUI:
-    /model <spec>     switch model (e.g. gpt-4o-mini · ollama_chat/gemma4:e4b)
+    /model <spec>     switch local model (e.g. ollama_chat/gemma4:e4b · ollama_chat/qwen3:8b)
     /http <base>      use byllm http_client mode via the adapter (small-model boxes)
     /dir <path>       switch workspace
     /quit             exit
@@ -99,6 +98,12 @@ def run_task(task: str, work_dir: str) {
 
 
 with entry {
+    # silence litellm's provider-list banners
+    os.environ["LITELLM_SUPPRESS_DEBUG_INFO"] = "true";
+    try {
+        import litellm;
+        litellm.suppress_debug_info = True;
+    } except Exception {}
     args = sys.argv[1:];
     work_dir = os.path.abspath(args[0]) if args else os.path.abspath("./work");
     model_spec = os.environ.get("SMITH_MODEL", "");
@@ -107,8 +112,8 @@ with entry {
     jacsmith.TRACE_HOOK = render_event;
 
     console.print("");
-    console.print("[bold orange3]⚒ jac-mini-coder[/bold orange3] [dim]— a Jac coding agent small enough for small models[/dim]");
-    mode = ("http:" + http_base) if http_base else (model_spec or "default (gpt-4o-mini)");
+    console.print("[bold orange3]⚒ jac-mini-coder[/bold orange3] [dim]— write Jac with your local model[/dim]");
+    mode = ("http:" + http_base) if http_base else (model_spec or "ollama_chat/gemma4:e4b (default)");
     console.print(f"[dim]model[/dim] {mode}   [dim]workspace[/dim] {work_dir}");
     console.print("[dim]type a task, or /help[/dim]");
     console.print("");

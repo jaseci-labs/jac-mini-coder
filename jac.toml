@@ -16,7 +16,7 @@ httpx = "latest"
 rich = "latest"
 
 [plugins.byllm.model]
-default_model = "gpt-4o-mini"
+default_model = "ollama_chat/gemma4:e4b"
 native_tools = true
 
 [plugins.byllm.call_params]

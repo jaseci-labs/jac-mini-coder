@@ -1,16 +1,16 @@
-"""JacSmith v6 — the `build_backend` compiled task-graph.
+"""jacsmith — the jac-mini-coder engine: compiled task-graphs for writing Jac.
 
 The procedure of authoring a Jac backend is the program, not a prose workflow:
 
-    plan → scaffold → declare → [DECL-CHECK gate] → implement → [BUILD gate] → [RUNTIME gate] → done
+    plan → scaffold → declare → [DECL gates] → implement → [BUILD gate] → [RUNTIME gate] → done
 
-Each stage is a mandatory station the walker MUST visit (compliance by construction);
-each gate is a code-owned red-check loop (bounded repair); each cognitive step is a
-tight typed byLLM slot fed ONLY its scoped slice + node-resident Jac best-practice
-knowledge. Built so a small local model (gemma-e4b, the student) can navigate it: the
-graph carries the procedure and sharp `jac check`/`jac build` red-checks compel the
-work. The frontier teacher tier repairs on stall; every gate verdict is a free training
-label for the co-design flywheel.
+Each stage is a mandatory station the walker MUST visit; each gate is a
+code-owned red-check with bounded repair; each cognitive step is a tight typed
+byLLM slot fed only its scoped slice. Standard blocks are code-authored
+templates; mechanical repairs run before any model repair. Built so a small
+LOCAL model — running entirely on your machine via ollama — writes correct,
+served-and-verified Jac: the graph carries the procedure, the gates compel the
+work, and the model only fills the holes only a model can fill.
 """
 
 import os;
@@ -22,8 +22,13 @@ import from typing { Callable }
 import from jaclang.byllm.lib { Model }
 
 glob JAC: str = os.path.expanduser("~/.local/bin/jac");
-# Dev default; the e4b executor is swapped in via jac.toml / BYLLM_DEFAULT_MODEL.
-glob llm: Model = Model(model_name="gpt-4o-mini");
+# Local by default: your ollama model writes the Jac. native_tools/think are the
+# two settings gemma-family models require (see README).
+glob llm: Model = Model(
+    model_name="ollama_chat/gemma4:e4b",
+    config={"native_tools": True},
+    call_params={"think": False}
+);
 
 
 # ==========================================================================
@@ -452,6 +457,15 @@ def _leaf_strings(o: object) -> list[str] {
     return out;
 }
 
+glob AGG_VERBS: list[str] = ["count", "total", "sum", "num_"];
+
+"""Aggregate-style reads (count_x, total_x) return a NUMBER, not the written
+content — they get a numeric scenario assertion instead of a substring one."""
+def _is_agg_endpoint(name: str) -> bool {
+    lowered = name.lower();
+    return any([lowered.startswith(v) or ("_" + v) in lowered for v in AGG_VERBS]);
+}
+
 def _is_read_endpoint(name: str) -> bool {
     lowered = name.lower();
     return any([lowered.startswith(v) or ("_" + v) in lowered for v in READ_VERBS]);
@@ -502,6 +516,14 @@ def gate_serve(project_dir: str, endpoints: list[EndpointSpec], dry: bool) -> Ch
             except Exception { ok = False; }
             if not ok {
                 fails.append(e.name + " <- " + e.example_json + " -> " + resp[:300]);
+            } elif _is_agg_endpoint(e.name) and written {
+                # aggregate reads return a number — after the earlier writes it
+                # must be nonzero
+                if re.search(r"\"reports\":\s*\[[^\]]*[1-9]", resp) is None {
+                    fails.append(
+                        e.name + " responded ok but reported no nonzero count after earlier writes -> " + resp[:300]
+                    );
+                }
             } elif _is_read_endpoint(e.name) and written {
                 # scenario assertion (owner=code, derived — never model-authored):
                 # a read endpoint must surface at least one value an earlier write
@@ -987,6 +1009,21 @@ def fill_impl_blocks(
     return out;
 }
 
+"""All impl signatures present in a skeleton's impl file — the repair-leverage
+fallback when a mutation's new-signature worklist is empty (idempotent re-adds,
+prior failed attempts)."""
+def all_impl_sigs(sk: Skeleton) -> str {
+    sigs: list[str] = [];
+    for d in sk.decls {
+        if ".impl." not in d.path { continue; }
+        for seg0 in re.split(r"(?m)^(?=impl\s)", d.source) {
+            seg = str(seg0).strip();
+            if seg { sigs.append(seg.split("{")[0].strip().rstrip(";") + ";"); }
+        }
+    }
+    return "\n".join(sigs);
+}
+
 """Merge-assembly for mutation graphs: existing blocks stay byte-identical
 unless a filled block replaces them by key; genuinely-new blocks append."""
 def merge_impl_blocks(existing: str, blocks: dict[str, str]) -> str {
@@ -1323,7 +1360,12 @@ walker add_endpoint {
             if mech_n < 2 and mechanical_decl_repair(self.skeleton, self.plan, res.errors) {
                 mech_n += 1;
                 self.log.append("decl-mech-repair");
-                append_new_stubs(self.skeleton);
+                more = append_new_stubs(self.skeleton);
+                if more {
+                    for st0 in self.skeleton.impl_targets {
+                        st0.signatures = (st0.signatures + "\n" + more).strip();
+                    }
+                }
                 write_all(self.project_dir, self.skeleton, self.dry_run);
                 res = decl_gates(self.project_dir, self.plan, self.skeleton, self.dry_run);
                 _trace({"station": "declare-add", "kind": "slot", "slot": "mech_repair", "round": n,
@@ -1332,7 +1374,12 @@ walker add_endpoint {
             }
             self.log.append("decl-repair-" + str(n + 1));
             self.skeleton = repair_decls(render_decls(self.skeleton), res.errors);
-            append_new_stubs(self.skeleton);
+            more = append_new_stubs(self.skeleton);
+            if more {
+                for st0 in self.skeleton.impl_targets {
+                    st0.signatures = (st0.signatures + "\n" + more).strip();
+                }
+            }
             write_all(self.project_dir, self.skeleton, self.dry_run);
             res = decl_gates(self.project_dir, self.plan, self.skeleton, self.dry_run);
             _trace({"station": "declare-add", "kind": "slot", "slot": "repair_decls", "round": n + 1,
@@ -1350,6 +1397,11 @@ walker add_endpoint {
     can do_implement with ImplementSt entry {
         self.log.append("implement-add");
         for st in self.skeleton.impl_targets {
+            if not st.signatures {
+                # idempotent re-add / prior failed attempt: take leverage over
+                # every existing block instead of doing nothing
+                st.signatures = all_impl_sigs(self.skeleton);
+            }
             if not st.signatures { continue; }
             cur0 = "";
             for d0 in self.skeleton.decls {

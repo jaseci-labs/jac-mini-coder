@@ -2,9 +2,9 @@
 
     jac run run_smith.jac -- "<task>" [work_dir]
 
-Model selection (the two tiers):
-    SMITH_MODEL     byllm/litellm spec (default: jacsmith's gpt-4o-mini teacher-dev default)
-                    e.g. gpt-4o-mini · ollama_chat/gemma4:e4b (student on the box)
+Model selection (local by default):
+    SMITH_MODEL     byllm/litellm spec (default: ollama_chat/gemma4:e4b)
+                    e.g. ollama_chat/gemma4:e4b · ollama_chat/qwen3:8b
     SMITH_BASE_URL  OpenAI-compatible endpoint, e.g. http://localhost:11434 via SSH tunnel
     SMITH_DRY=1     dry run — exercise the graph + typed slots, skip disk/jac gates
 """
@@ -15,6 +15,12 @@ import jacsmith;
 import from jaclang.byllm.lib { Model }
 
 with entry {
+    # silence litellm's provider-list banners
+    os.environ["LITELLM_SUPPRESS_DEBUG_INFO"] = "true";
+    try {
+        import litellm;
+        litellm.suppress_debug_info = True;
+    } except Exception {}
     args = sys.argv[1:];
     task = args[0] if len(args) > 0 else "Build a tiny notes API: create_note(title, body) and list_notes endpoints over a Note node graph.";
     work_dir = args[1] if len(args) > 1 else os.path.abspath("./out");
