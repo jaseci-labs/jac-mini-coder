@@ -9,12 +9,21 @@ Prefer a hosted model? Bring your own litellm spec + API key.
     jac run main.jac -- ./mydir      # pick a workspace
 
 Commands inside the TUI:
-    /model <spec>        switch local model (e.g. ollama_chat/gemma4:e4b · ollama_chat/qwen3:8b)
-    /api <spec> [key]    hosted model via litellm — provider-prefixed spec
+    /model · /config     model config screen — local ollama (installed models
+                         listed), Z.ai Coding Plan (pick a GLM model), or any
+                         custom litellm spec + key + base URL, with examples
+    /model <spec>        switch local model directly (e.g. ollama_chat/qwen3:8b)
+    /api <spec> [key] [base-url]
+                         hosted model via litellm — provider-prefixed spec
                          (zai/glm-4.7 · openai/gpt-5.2-mini · anthropic/claude-haiku-4-5 ·
                           gemini/gemini-2.5-flash · groq/... · openrouter/...);
-                         key prompted securely if omitted
+                         key prompted securely if omitted; base-url overrides the
+                         provider endpoint (coding plans / gateways)
+    /api zai-code [key]  Z.ai GLM Coding Plan (subscription) — routes glm-4.7
+                         through the plan's OpenAI-compatible coding endpoint
     /http <base>         byllm http_client mode via the adapter (small-model boxes)
+    /update              upgrade to the latest release (git pull in a clone;
+                         otherwise re-runs the latest release installer)
     /dir <path>          switch workspace
     /quit                exit
     anything else        a task — build, add an endpoint, or fix a bug; the router decides
@@ -28,6 +37,7 @@ import os;
 import sys;
 import json;
 import getpass;
+import subprocess;
 import minicoder;
 import fullstack;
 import mascot;
@@ -40,6 +50,15 @@ import from rich { box as richbox }
 glob console = Console();
 
 glob CONF_PATH: str = os.path.join(os.path.expanduser("~"), ".jac-mini-coder", "config.json");
+
+# coding-plan / gateway adapters: a litellm spec + a base-URL override.
+# These are SUBSCRIPTION coding APIs (flat monthly), not the pay-per-token
+# direct APIs — same key works across coding tools.
+glob PRESETS: dict[str, dict[str, str]] = {
+    "zai-code": {"spec": "openai/glm-4.7",
+                 "base": "https://api.z.ai/api/coding/paas/v4",
+                 "note": "Z.ai GLM Coding Plan (subscription; OpenAI-compatible endpoint)"}
+};
 
 # live spinner handle while a task runs (rich Status); events print above it
 glob STATUS: any = None;
@@ -109,20 +128,31 @@ def render_event(rec: dict) {
 
 """Bind the chosen model into both engine modules. Three modes:
 http adapter (small-model boxes) > hosted API (litellm spec + key) > local ollama."""
-def configure_model(spec: str, http_base: str, api_key: str = "") {
+def configure_model(spec: str, http_base: str, api_key: str = "", api_base: str = "") {
+    # generated agentic apps (and their gate-time servers) inherit the choice;
+    # cleared on non-hosted modes so a mid-session switch doesn't linger
+    os.environ["JAC_AI_MODEL"] = spec if api_key else "";
+    os.environ["JAC_AI_API_KEY"] = api_key;
+    os.environ["JAC_AI_API_BASE"] = api_base if api_key else "";
     if http_base {
         m = Model(
             model_name=(spec.split("/")[-1] if spec else "gemma4:e4b"),
             api_key="local",
             config={"http_client": True, "api_base": http_base, "native_tools": True}
         );
-    } elif api_key {
+    } elif api_key or (spec and ("/" in spec) and (not spec.startswith("ollama"))
+                       and (key_env_for(spec)["present"] == "1")) {
         # hosted provider — litellm resolves the provider from the spec prefix
-        # (zai/..., openai/..., anthropic/...); the key rides on every call
-        m = Model(model_name=spec, api_key=api_key, config={"native_tools": True});
-        # generated agentic apps (and their gate-time servers) inherit the choice
+        # (zai/..., openai/..., anthropic/...). Key rides on every call when
+        # given; with no key litellm falls back to the provider's env var
+        # (validate_environment-confirmed). api_base override = coding-plan /
+        # gateway endpoints (e.g. Z.ai Coding Plan via openai/<model>)
         os.environ["JAC_AI_MODEL"] = spec;
-        os.environ["JAC_AI_API_KEY"] = api_key;
+        os.environ["JAC_AI_API_BASE"] = api_base;
+        cfg: dict = {"native_tools": True};
+        if api_base { cfg["api_base"] = api_base; }
+        if api_key { m = Model(model_name=spec, api_key=api_key, config=cfg); }
+        else { m = Model(model_name=spec, config=cfg); }
     } elif spec {
         m = Model(
             model_name=spec,
@@ -135,31 +165,145 @@ def configure_model(spec: str, http_base: str, api_key: str = "") {
 }
 
 
-"""First-run interactive choice: local ollama (free, private) or a hosted API."""
-def pick_model -> dict[str, str] {
-    console.print("[bold]Choose your model[/bold]");
-    console.print("  [orange3]1.[/orange3] Local ollama [dim]— free, private (default gemma4:e4b)[/dim]");
-    console.print("  [orange3]2.[/orange3] Hosted API [dim]— litellm spec + your API key (e.g. zai/glm-4.7)[/dim]");
-    choice = "";
-    try { choice = input("  1/2 > ").strip(); } except (EOFError, KeyboardInterrupt) { choice = "1"; }
-    if choice != "2" {
-        spec = "";
-        try { spec = input("  model [ollama_chat/gemma4:e4b] > ").strip(); } except (EOFError, KeyboardInterrupt) {}
-        if spec and ("/" not in spec) { spec = "ollama_chat/" + spec; }
-        return {"model": spec or "ollama_chat/gemma4:e4b", "api_key": "", "http_base": ""};
+def ollama_models -> list[str] {
+    try {
+        r = subprocess.run(["ollama", "list"], capture_output=True, text=True, timeout=10);
+        names: list[str] = [];
+        for line in (r.stdout or "").split("\n")[1:] {
+            t = line.strip().split();
+            if t { names.append(str(t[0])); }
+        }
+        return names;
+    } except Exception { return []; }
+}
+
+"""Ask litellm how the key should be stored for a spec: the provider's env
+var name (validate_environment) and whether it is already set."""
+def key_env_for(spec: str) -> dict[str, str] {
+    if spec.startswith("zai/") {
+        # litellm's env map doesn't cover zai (reports always-present) — check directly
+        return {"name": "ZAI_API_KEY", "present": ("1" if os.environ.get("ZAI_API_KEY", "") else "")};
     }
+    try {
+        import litellm;
+        vfn = getattr(litellm, "validate_environment");
+        v = vfn(spec);
+        missing = [str(k) for k in v.get("missing_keys", [])];
+        present = "1" if v.get("keys_in_environment", False) else "";
+        return {"name": (missing[0] if missing else ""), "present": present};
+    } except Exception {}
+    return {"name": "", "present": ""};
+}
+
+def _ask_key(saved_key: str, env_name: str = "", env_present: str = "") -> dict[str, str] {
+    hint = "";
+    if env_present { hint = " [blank = use $" + (env_name or "env key") + "]"; }
+    elif saved_key { hint = " [blank = keep saved ····" + saved_key[-4:] + "]"; }
+    key = "";
+    try { key = getpass.getpass("  API key (hidden)" + hint + " > ").strip(); }
+    except (EOFError, KeyboardInterrupt) {}
+    if key { return {"key": key, "from_env": ""}; }
+    if env_present { return {"key": "", "from_env": "1"}; }
+    return {"key": saved_key, "from_env": ""};
+}
+
+"""Local path: pick an installed ollama model by number, or type any name."""
+def ask_local -> dict[str, str] {
+    models = ollama_models();
+    console.print("  [bold]Local model (ollama)[/bold] [dim]— free, private[/dim]");
+    i = 1;
+    for mname in models {
+        console.print(f"    [orange3]{i}.[/orange3] {mname}");
+        i += 1;
+    }
+    if not models {
+        console.print("    [dim](no models installed yet — `ollama pull gemma4:e4b`)[/dim]");
+    }
+    console.print("    [dim]…or type any ollama model name (e.g. qwen3:8b)[/dim]");
+    choice = "";
+    try { choice = input("  pick [gemma4:e4b] > ").strip(); } except (EOFError, KeyboardInterrupt) {}
+    name = "gemma4:e4b";
+    if choice {
+        if choice.isdigit() and (0 < int(choice) <= len(models)) { name = models[int(choice) - 1]; }
+        else { name = choice.replace("ollama_chat/", ""); }
+    }
+    return {"model": "ollama_chat/" + name, "api_key": "", "http_base": "", "api_base": ""};
+}
+
+"""Z.ai GLM Coding Plan: subscription key + your choice of GLM model, routed
+through the plan's OpenAI-compatible coding endpoint."""
+def ask_zai(saved_key: str) -> dict[str, str] {
+    p = PRESETS["zai-code"];
+    console.print("  [bold]Z.ai GLM Coding Plan[/bold] [dim]— subscription key, flat monthly[/dim]");
+    console.print("    [dim]models: glm-4.7 · glm-5.1 · glm-5-turbo   endpoint: " + p["base"] + "[/dim]");
+    mdl = "";
+    try { mdl = input("  GLM model [glm-4.7] > ").strip(); } except (EOFError, KeyboardInterrupt) {}
+    mdl = mdl or "glm-4.7";
+    zai_env = "1" if os.environ.get("ZAI_API_KEY", "") else "";
+    console.print("    [dim]key storage: paste your plan key below (config.json, 0600) or export ZAI_API_KEY[/dim]");
+    kr = _ask_key(saved_key, "ZAI_API_KEY", zai_env);
+    key = kr["key"];
+    if kr["from_env"] { key = os.environ.get("ZAI_API_KEY", ""); }
+    if not key { return {}; }
+    return {"model": "openai/" + mdl, "api_key": key, "http_base": "", "api_base": p["base"],
+            "key_from_env": kr["from_env"]};
+}
+
+"""Custom litellm config: any provider/model spec + key + optional base URL —
+anything litellm accepts works here."""
+def ask_custom(saved_key: str) -> dict[str, str] {
+    console.print("  [bold]Custom litellm[/bold] [dim]— any provider/model spec litellm accepts[/dim]");
+    console.print("    [dim]spec examples:  zai/glm-4.7 · openai/gpt-5.2-mini · anthropic/claude-haiku-4-5[/dim]");
+    console.print("    [dim]                gemini/gemini-2.5-flash · groq/llama-3.3-70b · openrouter/…[/dim]");
+    console.print("    [dim]base URL: any OpenAI-compatible server or gateway with spec openai/<model>[/dim]");
+    console.print("    [dim]          (vLLM · LM Studio · llama.cpp · coding plans, e.g. " + PRESETS["zai-code"]["base"] + ")[/dim]");
     spec = "";
     while not spec {
-        try { spec = input("  litellm spec (provider/model, e.g. zai/glm-4.7) > ").strip(); }
-        except (EOFError, KeyboardInterrupt) { return {"model": "", "api_key": "", "http_base": ""}; }
+        try { spec = input("  litellm spec (provider/model) > ").strip(); }
+        except (EOFError, KeyboardInterrupt) { return {}; }
         if spec and ("/" not in spec) {
-            console.print("  [red]needs a litellm provider prefix[/red] [dim]— zai/, openai/, anthropic/, gemini/, groq/, openrouter/ … see docs.litellm.ai/docs/providers[/dim]");
+            console.print("  [red]needs a litellm provider prefix[/red] [dim]— see docs.litellm.ai/docs/providers[/dim]");
             spec = "";
         }
     }
-    key = "";
-    try { key = getpass.getpass("  API key (hidden) > ").strip(); } except (EOFError, KeyboardInterrupt) {}
-    return {"model": spec, "api_key": key, "http_base": ""};
+    env = key_env_for(spec);
+    if env["name"] or env["present"] {
+        where = ("$" + env["name"]) if env["name"] else "the provider's env var";
+        found = " — [green]found in your environment[/green]" if env["present"] else "";
+        console.print("    [dim]key storage: litellm reads " + where + found + "; or paste below (config.json, 0600)[/dim]");
+    }
+    kr = _ask_key(saved_key, env["name"], env["present"]);
+    if (not kr["key"]) and (not kr["from_env"]) { return {}; }
+    base = "";
+    try { base = input("  base URL override [blank = provider default] > ").strip(); }
+    except (EOFError, KeyboardInterrupt) {}
+    return {"model": spec, "api_key": kr["key"], "http_base": "", "api_base": base,
+            "key_from_env": kr["from_env"]};
+}
+
+"""The model config screen (/model or /config): local ollama, Z.ai Coding
+Plan, or any custom litellm spec + base URL. Returns {} on cancel."""
+def model_config(cur: str, saved_key: str) -> dict[str, str] {
+    console.print("[bold]Model config[/bold]" + (f" [dim]— current: {cur}[/dim]" if cur else ""));
+    console.print("  [orange3]1.[/orange3] Local (ollama) [dim]— free, private; pick from installed models[/dim]");
+    console.print("  [orange3]2.[/orange3] Z.ai Coding Plan [dim]— subscription key; glm-4.7 / glm-5.1 / …[/dim]");
+    console.print("  [orange3]3.[/orange3] Custom litellm [dim]— any provider/model + key + optional base URL[/dim]");
+    console.print("  [dim]saved to " + CONF_PATH + "[/dim]");
+    choice = "";
+    try { choice = input("  1/2/3 (blank = cancel) > ").strip(); }
+    except (EOFError, KeyboardInterrupt) { return {}; }
+    if choice == "1" { return ask_local(); }
+    if choice == "2" { return ask_zai(saved_key); }
+    if choice == "3" { return ask_custom(saved_key); }
+    return {};
+}
+
+"""First run: same config screen, but blank/cancel falls back to the default
+local model so the TUI always starts usable."""
+def pick_model -> dict[str, str] {
+    got = model_config("", "");
+    if got and got.get("model") { return got; }
+    return {"model": "ollama_chat/gemma4:e4b", "api_key": "", "http_base": "", "api_base": ""};
 }
 
 
@@ -199,9 +343,12 @@ def run_task(task: str, work_dir: str) {
 }
 
 
-def mode_label(spec: str, http_base: str, api_key: str) -> str {
+def mode_label(spec: str, http_base: str, api_key: str, api_base: str = "") -> str {
     if http_base { return "http:" + http_base; }
-    if api_key { return (spec or "?") + " (api key ····" + api_key[-4:] + ")"; }
+    if api_key {
+        via = (" via " + api_base) if api_base else "";
+        return (spec or "?") + " (api key ····" + api_key[-4:] + via + ")";
+    }
     return spec or "ollama_chat/gemma4:e4b (default)";
 }
 
@@ -237,6 +384,7 @@ with entry {
     model_spec = os.environ.get("JACMINI_MODEL", os.environ.get("SMITH_MODEL", "")) or str(conf.get("model", ""));
     api_key = os.environ.get("JACMINI_API_KEY", "") or str(conf.get("api_key", ""));
     http_base = os.environ.get("JACMINI_HTTP_BASE", os.environ.get("SMITH_HTTP_BASE", "")) or str(conf.get("http_base", ""));
+    api_base = os.environ.get("JACMINI_API_BASE", "") or str(conf.get("api_base", ""));
 
     first_run = (not model_spec) and (not http_base);
     # ninja head beside the welcome text, claude-code style
@@ -247,7 +395,7 @@ with entry {
     info.append(["write Jac with your own model — verified live", "dim"]);
     info.append(["", ""]);
     if not first_run {
-        info.append(["model:     " + mode_label(model_spec, http_base, api_key), "default"]);
+        info.append(["model:     " + mode_label(model_spec, http_base, api_key, api_base), "default"]);
     }
     info.append(["workspace: " + work_dir.replace(os.path.expanduser("~"), "~"), "default"]);
     banner = Text();
@@ -268,11 +416,13 @@ with entry {
         picked = pick_model();
         model_spec = str(picked.get("model", ""));
         api_key = str(picked.get("api_key", ""));
-        save_conf({"model": model_spec, "api_key": api_key, "http_base": ""});
+        api_base = str(picked.get("api_base", ""));
+        persist_key = "" if str(picked.get("key_from_env", "")) else api_key;
+        save_conf({"model": model_spec, "api_key": persist_key, "http_base": "", "api_base": api_base});
         console.print(f"  [dim]saved to {CONF_PATH}[/dim]");
-        console.print(f"  [dim]model:[/dim] {mode_label(model_spec, http_base, api_key)}");
+        console.print(f"  [dim]model:[/dim] {mode_label(model_spec, http_base, api_key, api_base)}");
     }
-    configure_model(model_spec, http_base, api_key);
+    configure_model(model_spec, http_base, api_key, api_base);
     minicoder.TRACE_HOOK = render_event;
 
     console.print("[dim]  type a task · /help for commands · /quit to exit[/dim]");
@@ -286,7 +436,23 @@ with entry {
             break;
         }
         if line == "/help" {
-            console.print("[dim]/model <spec> · /api <spec> [key] · /http <base> · /dir <path> · /quit — anything else is a task[/dim]");
+            console.print("[dim]/model or /config (model config screen) · /model <spec> · /api <spec|preset> [key] [base-url] · /http <base> · /dir <path> · /update · /quit — anything else is a task[/dim]");
+            continue;
+        }
+        if line in ("/model", "/config") {
+            picked = model_config(mode_label(model_spec, http_base, api_key, api_base), api_key);
+            if picked and picked.get("model") {
+                model_spec = str(picked.get("model", ""));
+                api_key = str(picked.get("api_key", ""));
+                api_base = str(picked.get("api_base", ""));
+                http_base = "";
+                configure_model(model_spec, http_base, api_key, api_base);
+                persist_key = "" if str(picked.get("key_from_env", "")) else api_key;
+                save_conf({"model": model_spec, "api_key": persist_key, "http_base": "", "api_base": api_base});
+                console.print(f"[dim]model → {mode_label(model_spec, http_base, api_key, api_base)}[/dim]");
+            } else {
+                console.print("[dim]unchanged[/dim]");
+            }
             continue;
         }
         if line.startswith("/model ") {
@@ -294,39 +460,85 @@ with entry {
             if "/" not in model_spec { model_spec = "ollama_chat/" + model_spec; }
             http_base = "";
             api_key = "";
-            configure_model(model_spec, http_base, api_key);
-            save_conf({"model": model_spec, "api_key": "", "http_base": ""});
+            api_base = "";
+            configure_model(model_spec, http_base, api_key, api_base);
+            save_conf({"model": model_spec, "api_key": "", "http_base": "", "api_base": ""});
             console.print(f"[dim]model → {model_spec}[/dim]");
             continue;
         }
         if line.startswith("/api ") {
-            parts = line.split(" ");
+            parts = [t for t in line.split(" ") if t];
             spec = parts[1].strip() if len(parts) > 1 else "";
-            if "/" not in spec {
-                console.print("[red]needs a litellm provider prefix[/red] [dim]— e.g. /api zai/glm-4.7 · see docs.litellm.ai/docs/providers[/dim]");
-                continue;
+            key = "";
+            base = "";
+            if spec in PRESETS {
+                base = PRESETS[spec]["base"];
+                spec2 = PRESETS[spec]["spec"];
+                key = parts[2].strip() if len(parts) > 2 else "";
+                spec = spec2;
+            } else {
+                if "/" not in spec {
+                    console.print("[red]needs a litellm provider prefix or a preset name[/red] [dim]— e.g. /api zai/glm-4.7 · /api zai-code · see docs.litellm.ai/docs/providers[/dim]");
+                    continue;
+                }
+                for t in parts[2:] {
+                    if t.startswith("http") { base = t.strip(); }
+                    else { key = t.strip(); }
+                }
             }
-            key = parts[2].strip() if len(parts) > 2 else "";
             if not key {
-                try { key = getpass.getpass("API key (hidden) > ").strip(); } except (EOFError, KeyboardInterrupt) {}
-            }
-            if not key {
-                console.print("[red]no key given[/red]");
-                continue;
+                env = key_env_for(spec);
+                if env["present"] {
+                    console.print("[dim]using " + (("$" + env["name"]) if env["name"] else "the provider env key") + " from your environment[/dim]");
+                } else {
+                    if env["name"] {
+                        console.print("[dim]key storage: litellm reads $" + env["name"] + " — or paste below (config.json, 0600)[/dim]");
+                    }
+                    try { key = getpass.getpass("API key (hidden) > ").strip(); } except (EOFError, KeyboardInterrupt) {}
+                    if not key {
+                        console.print("[red]no key given[/red]");
+                        continue;
+                    }
+                }
             }
             model_spec = spec;
             api_key = key;
+            api_base = base;
             http_base = "";
-            configure_model(model_spec, http_base, api_key);
-            save_conf({"model": model_spec, "api_key": api_key, "http_base": ""});
-            console.print(f"[dim]model → {mode_label(model_spec, http_base, api_key)}[/dim]");
+            configure_model(model_spec, http_base, api_key, api_base);
+            save_conf({"model": model_spec, "api_key": api_key, "http_base": "", "api_base": api_base});
+            console.print(f"[dim]model → {mode_label(model_spec, http_base, api_key, api_base)}[/dim]");
             continue;
         }
         if line.startswith("/http ") {
             http_base = line.split(" ", 1)[1].strip();
-            configure_model(model_spec, http_base, api_key);
-            save_conf({"model": model_spec, "api_key": api_key, "http_base": http_base});
+            configure_model(model_spec, http_base, api_key, api_base);
+            save_conf({"model": model_spec, "api_key": api_key, "http_base": http_base, "api_base": api_base});
             console.print(f"[dim]http mode → {http_base}[/dim]");
+            continue;
+        }
+        if line == "/update" {
+            with console.status("[orange3]✳[/orange3] [bold]Updating…[/bold]") as _st {
+                if os.path.isdir(os.path.join(os.getcwd(), ".git")) {
+                    r = subprocess.run(["git", "pull", "--ff-only"], capture_output=True, text=True, timeout=120);
+                    out = ((r.stdout or "") + (r.stderr or "")).strip();
+                    console.print("[dim]" + "\n".join(out.split("\n")[-3:]) + "[/dim]");
+                    subprocess.run(["jac", "install"], capture_output=True, text=True, timeout=600);
+                    ok_up = (r.returncode == 0);
+                } else {
+                    r = subprocess.run(["bash", "-c",
+                        "curl -fsSL https://github.com/jaseci-labs/jac-mini-coder/releases/latest/download/install.sh | bash"],
+                        capture_output=True, text=True, timeout=900);
+                    out = ((r.stdout or "") + (r.stderr or "")).strip();
+                    console.print("[dim]" + "\n".join(out.split("\n")[-4:]) + "[/dim]");
+                    ok_up = (r.returncode == 0);
+                }
+            }
+            if ok_up {
+                console.print("[green]updated[/green] [dim]— restart jac-mini-coder to load the new version[/dim]");
+            } else {
+                console.print("[red]update failed[/red] [dim]— see output above[/dim]");
+            }
             continue;
         }
         if line.startswith("/dir ") {

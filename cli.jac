@@ -9,6 +9,9 @@ Model selection (local by default):
                       openai/gpt-5.2-mini, anthropic/claude-haiku-4-5, …
     JACMINI_API_KEY   API key for a hosted spec (litellm resolves the provider
                       from the prefix; see docs.litellm.ai/docs/providers)
+    JACMINI_API_BASE  endpoint override for the hosted spec — coding-plan /
+                      gateway APIs (e.g. Z.ai GLM Coding Plan:
+                      openai/glm-4.7 @ https://api.z.ai/api/coding/paas/v4)
     SMITH_BASE_URL    OpenAI-compatible endpoint, e.g. http://localhost:11434 via SSH tunnel
     SMITH_DRY=1       dry run — exercise the graph + typed slots, skip disk/jac gates
 """
@@ -46,9 +49,14 @@ with entry {
         minicoder.llm = m;
         fullstack.llm = m;
     } elif os.environ.get("JACMINI_API_KEY", "") and spec {
-        # hosted provider — litellm resolves the provider from the spec prefix
+        # hosted provider — litellm resolves the provider from the spec prefix;
+        # JACMINI_API_BASE overrides the endpoint (coding plans / gateways)
+        cfgh: dict = {"native_tools": True};
+        if os.environ.get("JACMINI_API_BASE", "") {
+            cfgh["api_base"] = os.environ.get("JACMINI_API_BASE", "");
+        }
         mh = Model(model_name=spec, api_key=os.environ.get("JACMINI_API_KEY", ""),
-                   config={"native_tools": True});
+                   config=cfgh);
         minicoder.llm = mh;
         fullstack.llm = mh;
     } elif spec {

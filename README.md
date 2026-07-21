@@ -68,8 +68,14 @@ in `~/.jac-mini-coder/config.json` (chmod 600).
   provider prefix is required: `zai/glm-4.7`, `openai/gpt-5.2-mini`,
   `anthropic/claude-haiku-4-5`, `gemini/gemini-2.5-flash`, `groq/…`,
   `openrouter/…`. The key is prompted hidden if omitted.
+- **Coding plan** (subscription APIs, not pay-per-token): `/api zai-code` routes
+  GLM through the [Z.ai GLM Coding Plan](https://docs.z.ai/devpack/tool/others)'s
+  OpenAI-compatible endpoint (`https://api.z.ai/api/coding/paas/v4`) using your
+  plan key. Any other coding/gateway endpoint works via
+  `/api <provider/model> <key> <base-url>` — the base URL overrides the
+  provider default.
 - Env vars override everything: `JACMINI_MODEL`, `JACMINI_API_KEY`,
-  `JACMINI_HTTP_BASE`.
+  `JACMINI_API_BASE`, `JACMINI_HTTP_BASE`.
 
 **Agentic apps inherit your choice.** Ask for an app with AI in it ("… with an
 AI assistant that answers questions about my notes") and the generated app gets

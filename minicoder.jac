@@ -803,6 +803,64 @@ def gate_completeness(plan: BuildPlan, sk: Skeleton) -> CheckResult {
     return CheckResult(ok=True, errors="");
 }
 
+"""Unconditional decl completeness (owner=code), run EVERY round: the domain
+node, its payload fields, and one walker per plan endpoint must exist. Models
+drop siblings during repairs (e2b oscillation) — the harness always restores
+them; error-gated repair was too weak a trigger."""
+def ensure_decl_completeness(sk: Skeleton, plan: BuildPlan) {
+    for d in sk.decls {
+        if ".impl." in d.path { continue; }
+        if (not re.search(r"(?m)^\s*node\s+\w+", d.source)) and plan.endpoints {
+            nn = _derive_node_name(plan);
+            d.source = "node " + nn + " {\n" + _payload_fields(plan) + "}\n\n" + d.source;
+        }
+        node_t = _first_node_type(d.source);
+        if node_t == "Root" { continue; }
+        m2 = re.search(r"(?m)^\s*node\s+" + node_t + r"\s*\{([\s\S]*?)\}", d.source);
+        if m2 {
+            body2 = str(m2.group(1));
+            missing_f = "";
+            seen2: list[str] = [];
+            for e in plan.endpoints {
+                try {
+                    pd2 = json.loads(e.example_json);
+                    for k in pd2.keys() {
+                        kk = str(k);
+                        if kk == "reports" or kk in seen2 { continue; }
+                        seen2.append(kk);
+                        if re.search(r"\bhas\s+" + kk + r"\s*:", body2) is None {
+                            t2 = _json_type(pd2[k]);
+                            dflt2 = " = \"\"" if t2 == "str" else (" = 0" if t2 in ["int", "float"] else " = []");
+                            missing_f = missing_f + "    has " + kk + ": " + t2 + dflt2 + ";\n";
+                        }
+                    }
+                } except Exception {}
+            }
+            if missing_f {
+                d.source = d.source.replace(str(m2.group(0)),
+                    "node " + node_t + " {\n" + body2.rstrip() + "\n" + missing_f + "}", 1);
+            }
+        }
+        for e in plan.endpoints {
+            if re.search(r"walker(:pub)?\s+" + e.name + r"\b", d.source) { continue; }
+            fields = "";
+            try {
+                pd = json.loads(e.example_json);
+                for k in pd.keys() {
+                    if k == "reports" { continue; }
+                    t = _json_type(pd[k]);
+                    dflt = " = \"\"" if t == "str" else (" = 0" if t in ["int", "float"] else " = []");
+                    fields = fields + "    has " + str(k) + ": " + t + dflt + ";\n";
+                }
+            } except Exception {}
+            collector = ("    can collect with " + node_t + " entry;\n") if _is_read_endpoint(e.name) else "";
+            d.source = d.source.rstrip() + "\n\n" + _walker_kw(e.name) + e.name + " {\n" + fields
+                + "    has reports: list[" + node_t + "] = [];\n"
+                + "    can run with Root entry;\n" + collector + "}\n";
+        }
+    }
+}
+
 """Force the mechanical scaffold invariants onto a model-authored Skeleton:
 the stub impl file is code-synthesized (replacing whatever the model emitted at
 that path) and impl_targets is code-derived — the model cannot drop either."""
@@ -851,6 +909,7 @@ def force_stub_file(sk: Skeleton, plan: BuildPlan) {
             d.source = "node " + ntn + " {\n" + fields + "}\n\n" + d.source;
         }
     }
+    ensure_decl_completeness(sk, plan);
     if ACCESS {
         for d in sk.decls {
             if ".impl." in d.path { continue; }

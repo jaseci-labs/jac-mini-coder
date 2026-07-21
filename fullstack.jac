@@ -191,8 +191,11 @@ def render_frontend_cl(plan: minicoder.BuildPlan, copy: UiCopy, auth: bool = Fal
     if auth {
         L.append("import from " + q + "@jac/runtime" + q + " { jacLogin, jacSignup, jacLogout, jacIsLoggedIn }");
     }
-    imports_line = node_t + ", " + wname + ", " + lname + (", ask_ai" if ai else "");
-    L.append("sv import from endpoints { " + imports_line + " }");
+    imp: list[str] = [node_t];
+    if wname { imp.append(wname); }
+    if lname and (lname != wname) { imp.append(lname); }
+    if ai { imp.append("ask_ai"); }
+    L.append("sv import from endpoints { " + ", ".join(imp) + " }");
     L.append("");
     L.append("glob PAGE_CSS: str = " + q + css_one_line(render_style_css(accent_for(plan.name))) + q + ";");
     L.append("");
@@ -220,7 +223,7 @@ def render_frontend_cl(plan: minicoder.BuildPlan, copy: UiCopy, auth: bool = Fal
     L.append("    }");
     L.append("");
     L.append("    async def loadItems -> None;");
-    L.append("    async def submitItem(e: FormEvent) -> None;");
+    if wname { L.append("    async def submitItem(e: FormEvent) -> None;"); }
     if ai {
         L.append("    async def doAsk(e: FormEvent) -> None;");
     }
@@ -257,6 +260,7 @@ def render_frontend_cl(plan: minicoder.BuildPlan, copy: UiCopy, auth: bool = Fal
         L.append("        {if authed {");
         L.append("        <button id=" + q + "logout" + q + " className=" + q + "logout" + q + " onClick={doLogout}>Log out</button>");
     }
+    if wname {
     L.append("        <form className=" + q + "entry-form" + q + " onSubmit={submitItem}>");
     for f in fields {
         ph = f[0].upper() + f[1:];
@@ -266,6 +270,7 @@ def render_frontend_cl(plan: minicoder.BuildPlan, copy: UiCopy, auth: bool = Fal
     }
     L.append("            <button id=" + q + "f-submit" + q + " type=" + q + "submit" + q + ">" + copy.submit_label + "</button>");
     L.append("        </form>");
+    }
     L.append("        <section className=" + q + "card-list" + q + ">");
     # (in auth mode the entry form and list render regardless, but every handler
     #  requires a session — the auth card sits above them until login; simple
@@ -345,18 +350,24 @@ def render_frontend_impl(plan: minicoder.BuildPlan, auth: bool = False, nt: str 
         L.append("");
     }
     L.append("impl app.loadItems -> None {");
-    L.append("    result = root spawn " + lname + "();");
-    L.append("    items = result.reports;");
+    if lname {
+        L.append("    result = root spawn " + lname + "();");
+        L.append("    items = result.reports;");
+    } else {
+        L.append("    items = [];");
+    }
     L.append("}");
     L.append("");
-    L.append("impl app.submitItem(e: FormEvent) -> None {");
-    L.append("    e.preventDefault();");
-    L.append("    result = root spawn " + wname + "(" + kwargs + ");");
-    L.append("    if result.reports and len(result.reports) > 0 {");
-    L.append("        items = items + [result.reports[0]];");
-    L.append("    }");
-    for f in fields { L.append("    " + f + " = " + q + q + ";"); }
-    L.append("}");
+    if wname {
+        L.append("impl app.submitItem(e: FormEvent) -> None {");
+        L.append("    e.preventDefault();");
+        L.append("    result = root spawn " + wname + "(" + kwargs + ");");
+        L.append("    if result.reports and len(result.reports) > 0 {");
+        L.append("        items = items + [result.reports[0]];");
+        L.append("    }");
+        for f in fields { L.append("    " + f + " = " + q + q + ";"); }
+        L.append("}");
+    }
     return NL.join(L) + NL;
 }
 
@@ -383,11 +394,12 @@ def render_ai_module -> str {
     L.append("glob AI_HTTP: str = os.environ.get(" + q + "JAC_AI_HTTP_BASE" + q + ", os.environ.get(" + q + "JACMINI_HTTP_BASE" + q + ", os.environ.get(" + q + "SMITH_HTTP_BASE" + q + ", _ai_conf(" + q + "http_base" + q + "))));");
     L.append("glob AI_MODEL: str = os.environ.get(" + q + "JAC_AI_MODEL" + q + ", " + q + q + ") or _ai_conf(" + q + "model" + q + ") or " + q + "ollama_chat/gemma4:e4b" + q + ";");
     L.append("glob AI_KEY: str = os.environ.get(" + q + "JAC_AI_API_KEY" + q + ", " + q + q + ") or _ai_conf(" + q + "api_key" + q + ");");
+    L.append("glob AI_BASE: str = os.environ.get(" + q + "JAC_AI_API_BASE" + q + ", " + q + q + ") or _ai_conf(" + q + "api_base" + q + ");");
     L.append("");
     L.append("glob llm: Model = Model(");
     L.append("    model_name=(AI_MODEL.split(" + q + "/" + q + ")[-1] if AI_HTTP else AI_MODEL),");
     L.append("    api_key=(" + q + "local" + q + " if AI_HTTP else AI_KEY),");
-    L.append("    config=({" + q + "http_client" + q + ": True, " + q + "api_base" + q + ": AI_HTTP, " + q + "native_tools" + q + ": True} if AI_HTTP else {" + q + "native_tools" + q + ": True}),");
+    L.append("    config=({" + q + "http_client" + q + ": True, " + q + "api_base" + q + ": AI_HTTP, " + q + "native_tools" + q + ": True} if AI_HTTP else ({" + q + "native_tools" + q + ": True, " + q + "api_base" + q + ": AI_BASE} if AI_BASE else {" + q + "native_tools" + q + ": True})),");
     L.append("    call_params=({" + q + "think" + q + ": False} if AI_MODEL.startswith(" + q + "ollama" + q + ") else {})");
     L.append(");");
     L.append("");
@@ -627,6 +639,26 @@ def gate_ui(project_dir: str, plan: minicoder.BuildPlan, shot_path: str, dry: bo
 }
 
 
+"""Re-render the frontend trio from the CURRENT decl before every decl gate:
+the project-wide `jac check` includes the frontend, and a frontend importing a
+node the model didn't name that round fails the check no matter how good the
+decl is (the e2b round-coupling failure)."""
+def sync_frontend(project_dir: str, plan: minicoder.BuildPlan, sk: minicoder.Skeleton,
+                  copy: UiCopy, auth: bool, ai: bool, dry: bool) {
+    if dry { return; }
+    decl_src = "";
+    for d in sk.decls {
+        if ".impl." not in d.path { decl_src = d.source; }
+    }
+    nt_real = minicoder._first_node_type(decl_src);
+    if nt_real != "Root" {
+        minicoder._write(project_dir, "main.jac", render_main_entry(plan, copy, nt_real));
+        minicoder._write(project_dir, "frontend.cl.jac", render_frontend_cl(plan, copy, auth, nt_real, ai));
+        minicoder._write(project_dir, "frontend.impl.jac", render_frontend_impl(plan, auth, nt_real, ai));
+    }
+}
+
+
 # ---- the build_fullstack task-graph ----------------------------------------
 
 walker build_fullstack {
@@ -728,6 +760,7 @@ walker build_fullstack {
         self.skeleton = minicoder.author_decls(self.plan, minicoder.BACKEND_DECL_GUIDE);
         minicoder.force_stub_file(self.skeleton, self.plan);
         minicoder.write_all(self.project_dir, self.skeleton, self.dry_run);
+        sync_frontend(self.project_dir, self.plan, self.skeleton, self.copy, self.auth_mode, self.ai_mode, self.dry_run);
         res = minicoder.decl_gates(self.project_dir, self.plan, self.skeleton, self.dry_run);
         minicoder._trace({"station": "declare", "kind": "slot", "slot": "author_decls", "round": 0,
                          "output": minicoder.render_decls(self.skeleton),
@@ -740,6 +773,7 @@ walker build_fullstack {
                 self.log.append("decl-mech-repair");
                 minicoder.force_stub_file(self.skeleton, self.plan);
                 minicoder.write_all(self.project_dir, self.skeleton, self.dry_run);
+                sync_frontend(self.project_dir, self.plan, self.skeleton, self.copy, self.auth_mode, self.ai_mode, self.dry_run);
                 res = minicoder.decl_gates(self.project_dir, self.plan, self.skeleton, self.dry_run);
                 minicoder._trace({"station": "declare", "kind": "slot", "slot": "mech_repair", "round": n,
                                  "output": minicoder.render_decls(self.skeleton),
@@ -750,6 +784,7 @@ walker build_fullstack {
             self.skeleton = minicoder.repair_decls(minicoder.render_decls(self.skeleton), res.errors);
             minicoder.force_stub_file(self.skeleton, self.plan);
             minicoder.write_all(self.project_dir, self.skeleton, self.dry_run);
+            sync_frontend(self.project_dir, self.plan, self.skeleton, self.copy, self.auth_mode, self.ai_mode, self.dry_run);
             res = minicoder.decl_gates(self.project_dir, self.plan, self.skeleton, self.dry_run);
             minicoder._trace({"station": "declare", "kind": "slot", "slot": "repair_decls", "round": n + 1,
                              "output": minicoder.render_decls(self.skeleton),
@@ -759,20 +794,6 @@ walker build_fullstack {
         if not res.ok {
             self.outcome.append(minicoder.BuildResult(ok=False, stage="decl", message=res.errors, files=self.log));
             disengage;
-        }
-        # the decl is now ground truth — re-render the frontend trio with the
-        # ACTUAL node name (the model may not have named it as derived)
-        if not self.dry_run {
-            decl_src = "";
-            for d in self.skeleton.decls {
-                if ".impl." not in d.path { decl_src = d.source; }
-            }
-            nt_real = minicoder._first_node_type(decl_src);
-            if nt_real != "Root" {
-                minicoder._write(self.project_dir, "main.jac", render_main_entry(self.plan, self.copy, nt_real));
-                minicoder._write(self.project_dir, "frontend.cl.jac", render_frontend_cl(self.plan, self.copy, self.auth_mode, nt_real, self.ai_mode));
-                minicoder._write(self.project_dir, "frontend.impl.jac", render_frontend_impl(self.plan, self.auth_mode, nt_real, self.ai_mode));
-            }
         }
         visit [-->];
     }
