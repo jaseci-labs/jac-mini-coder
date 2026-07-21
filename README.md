@@ -1,6 +1,7 @@
 # ⚒ jac-mini-coder
 
-**Write Jac with your local model. No cloud, no API keys.**
+**Write Jac with your own model.** Local ollama by default — no cloud, no
+API keys. Or bring a hosted model via any litellm provider spec + your key.
 
 Most coding agents are an open ReAct loop: a big hosted model, a big tool
 menu, and a prompt full of instructions the model is trusted to follow. A
@@ -52,11 +53,30 @@ jac run main.jac
 ```
 
 That's it — type what you want built. TUI commands: `/model <spec>` ·
-`/dir <path>` · `/quit`; anything else is a task. Headless:
-`jac run cli.jac -- "<task>" <workspace>`.
+`/api <spec> [key]` · `/dir <path>` · `/quit`; anything else is a task.
+Headless: `jac run cli.jac -- "<task>" <workspace>`.
 
-Any ollama model works via `/model ollama_chat/<name>`. The default is
-`gemma4:e4b` (~10 GB, runs on a single consumer GPU or Apple silicon).
+## Choose your model
+
+On first run the TUI asks: local ollama, or a hosted API. The choice persists
+in `~/.jac-mini-coder/config.json` (chmod 600).
+
+- **Local** (default): any ollama model via `/model ollama_chat/<name>`.
+  `gemma4:e4b` (~10 GB) runs on a single consumer GPU or Apple silicon.
+- **Hosted**: `/api <provider/model> [key]` with a
+  [litellm provider spec](https://docs.litellm.ai/docs/providers) — the
+  provider prefix is required: `zai/glm-4.7`, `openai/gpt-5.2-mini`,
+  `anthropic/claude-haiku-4-5`, `gemini/gemini-2.5-flash`, `groq/…`,
+  `openrouter/…`. The key is prompted hidden if omitted.
+- Env vars override everything: `JACMINI_MODEL`, `JACMINI_API_KEY`,
+  `JACMINI_HTTP_BASE`.
+
+**Agentic apps inherit your choice.** Ask for an app with AI in it ("… with an
+AI assistant that answers questions about my notes") and the generated app gets
+its own typed `by llm()` slot, grounded in the user's graph data, wired to the
+same model you picked — env first (`JAC_AI_MODEL` / `JAC_AI_API_KEY` /
+`JAC_AI_HTTP_BASE`), then your saved config, then local ollama. Your API key is
+read at serve time, never baked into the generated source.
 
 ## How it works
 
@@ -117,7 +137,7 @@ think = false          # gemma's thinking channel otherwise swallows content
 ollama (ctx 16384), the model, project files, and a smoke probe. On hosts
 where the embedded runtime's litellm transport crashes (observed on glibc
 2.39), it auto-installs `byllm_adapter.py` as a systemd service — then run
-with `SMITH_MODEL=gemma4:e4b SMITH_HTTP_BASE=http://127.0.0.1:11438`, or use
+with `JACMINI_MODEL=gemma4:e4b JACMINI_HTTP_BASE=http://127.0.0.1:11438`, or use
 `/http http://127.0.0.1:11438` in the TUI.
 
 ## Layout
@@ -125,7 +145,7 @@ with `SMITH_MODEL=gemma4:e4b SMITH_HTTP_BASE=http://127.0.0.1:11438`, or use
 ```
 main.jac            the TUI (live station/gate rendering)
 cli.jac             headless runner (scripts, CI)
-jacsmith.jac        the engine: task-graphs, slots, templates, gates, repairs
+minicoder.jac        the engine: task-graphs, slots, templates, gates, repairs
 gen_pairs.jac       run traces → gate-labeled data pairs
 byllm_adapter.py    http-mode adapter (for hosts that need it)
 box_init.sh         one-command GPU server provisioning

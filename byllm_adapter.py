@@ -10,7 +10,7 @@ import json
 import urllib.request
 
 OLLAMA = "http://localhost:11434/api/chat"
-LOG = "/home/ubuntu/jacsmith/adapter.jsonl"
+LOG = "/home/ubuntu/jac-mini-coder/adapter.jsonl"
 
 
 class H(http.server.BaseHTTPRequestHandler):

@@ -14,7 +14,7 @@ import re;
 import json;
 import time;
 import subprocess;
-import jacsmith;
+import minicoder;
 import from jaclang.byllm.lib { Model, Image }
 
 glob JAC: str = os.path.expanduser("~/.local/bin/jac");
@@ -85,7 +85,7 @@ sem restyle_css.issues = "The visual issues to fix, plus the design standards.";
 
 # ---- template derivation (owner=code) --------------------------------------
 
-def plan_fields(plan: jacsmith.BuildPlan) -> list[str] {
+def plan_fields(plan: minicoder.BuildPlan) -> list[str] {
     # the UI's form maps to the PRIMARY write endpoint only — mixing payloads
     # from several writes produced forms referencing fields the node lacks
     out: list[str] = [];
@@ -102,16 +102,16 @@ def plan_fields(plan: jacsmith.BuildPlan) -> list[str] {
     return out;
 }
 
-def write_walker_name(plan: jacsmith.BuildPlan) -> str {
+def write_walker_name(plan: minicoder.BuildPlan) -> str {
     for e in plan.endpoints {
-        if not jacsmith._is_read_endpoint(e.name) { return e.name; }
+        if not minicoder._is_read_endpoint(e.name) { return e.name; }
     }
     return "";
 }
 
-def list_walker_name(plan: jacsmith.BuildPlan) -> str {
+def list_walker_name(plan: minicoder.BuildPlan) -> str {
     for e in plan.endpoints {
-        if jacsmith._is_read_endpoint(e.name) and (not jacsmith._is_agg_endpoint(e.name)) {
+        if minicoder._is_read_endpoint(e.name) and (not minicoder._is_agg_endpoint(e.name)) {
             return e.name;
         }
     }
@@ -157,7 +157,16 @@ def render_style_css(accent: str) -> str {
         ".auth-row button[type=button] { background: var(--card); color: var(--accent); }",
         ".auth-msg { color: #b4232a; font-size: 14px; margin: 0; }",
         ".logout { float: right; margin-top: -56px; background: none; border: 1px solid var(--line);",
-        "  border-radius: var(--radius); padding: 6px 12px; color: var(--muted); cursor: pointer; }"
+        "  border-radius: var(--radius); padding: 6px 12px; color: var(--muted); cursor: pointer; }",
+        ".ask-card { display: flex; gap: 8px; margin-top: 28px; }",
+        ".ask-card input { flex: 1; padding: 10px 12px; font-size: 15px; border: 1px solid var(--line);",
+        "  border-radius: var(--radius); background: var(--card); }",
+        ".ask-card input:focus { outline: 2px solid var(--accent); outline-offset: 1px; }",
+        ".ask-card button { padding: 10px 18px; font-weight: 600; color: var(--accent); background: var(--card);",
+        "  border: 1px solid var(--accent); border-radius: var(--radius); cursor: pointer; }",
+        ".ask-card button:hover { background: var(--accent); color: #fff; }",
+        ".ai-answer { background: var(--card); border-left: 3px solid var(--accent); border-radius: var(--radius);",
+        "  padding: 12px 16px; margin-top: 10px; color: var(--ink); font-size: 14.5px; white-space: pre-wrap; }"
     ];
     return NL.join(lines) + NL;
 }
@@ -170,9 +179,9 @@ def css_one_line(css: str) -> str {
     return s.strip();
 }
 
-def render_frontend_cl(plan: jacsmith.BuildPlan, copy: UiCopy, auth: bool = False, nt: str = "") -> str {
+def render_frontend_cl(plan: minicoder.BuildPlan, copy: UiCopy, auth: bool = False, nt: str = "", ai: bool = False) -> str {
     fields = plan_fields(plan);
-    node_t = nt if nt else jacsmith._derive_node_name(plan);
+    node_t = nt if nt else minicoder._derive_node_name(plan);
     wname = write_walker_name(plan);
     lname = list_walker_name(plan);
     q = DQ;
@@ -182,7 +191,8 @@ def render_frontend_cl(plan: jacsmith.BuildPlan, copy: UiCopy, auth: bool = Fals
     if auth {
         L.append("import from " + q + "@jac/runtime" + q + " { jacLogin, jacSignup, jacLogout, jacIsLoggedIn }");
     }
-    L.append("sv import from endpoints { " + node_t + ", " + wname + ", " + lname + " }");
+    imports_line = node_t + ", " + wname + ", " + lname + (", ask_ai" if ai else "");
+    L.append("sv import from endpoints { " + imports_line + " }");
     L.append("");
     L.append("glob PAGE_CSS: str = " + q + css_one_line(render_style_css(accent_for(plan.name))) + q + ";");
     L.append("");
@@ -195,6 +205,10 @@ def render_frontend_cl(plan: jacsmith.BuildPlan, copy: UiCopy, auth: bool = Fals
         L.append("    has auth_msg: str = " + q + q + ";");
     }
     for f in fields { L.append("    has " + f + ": str = " + q + q + ";"); }
+    if ai {
+        L.append("    has ai_q: str = " + q + q + ";");
+        L.append("    has ai_a: str = " + q + q + ";");
+    }
     L.append("");
     L.append("    can with entry {");
     if auth {
@@ -207,6 +221,9 @@ def render_frontend_cl(plan: jacsmith.BuildPlan, copy: UiCopy, auth: bool = Fals
     L.append("");
     L.append("    async def loadItems -> None;");
     L.append("    async def submitItem(e: FormEvent) -> None;");
+    if ai {
+        L.append("    async def doAsk(e: FormEvent) -> None;");
+    }
     if auth {
         L.append("    async def doLogin(e: FormEvent) -> None;");
         L.append("    async def doSignup -> None;");
@@ -263,13 +280,24 @@ def render_frontend_cl(plan: jacsmith.BuildPlan, copy: UiCopy, auth: bool = Fals
     L.append("                <article key={str(i)} className=" + q + "card" + q + ">" + card + "</article>");
     L.append("            }}");
     L.append("        </section>");
+    if ai {
+        L.append("        <form className=" + q + "ask-card" + q + " onSubmit={doAsk}>");
+        L.append("            <input id=" + q + "ai-question" + q + " type=" + q + "text" + q + " value={ai_q}");
+        L.append("                onChange={lambda (e: ChangeEvent) { ai_q = e.target.value; }}");
+        L.append("                placeholder=" + q + "Ask AI about your data…" + q + " />");
+        L.append("            <button id=" + q + "ai-ask" + q + " type=" + q + "submit" + q + ">Ask AI</button>");
+        L.append("        </form>");
+        L.append("        {if ai_a {");
+        L.append("            <p id=" + q + "ai-answer" + q + " className=" + q + "ai-answer" + q + ">{ai_a}</p>");
+        L.append("        }}");
+    }
     if auth { L.append("        }}"); }
     L.append("    </div>;");
     L.append("}");
     return NL.join(L) + NL;
 }
 
-def render_frontend_impl(plan: jacsmith.BuildPlan, auth: bool = False, nt: str = "") -> str {
+def render_frontend_impl(plan: minicoder.BuildPlan, auth: bool = False, nt: str = "", ai: bool = False) -> str {
     fields = plan_fields(plan);
     wname = write_walker_name(plan);
     lname = list_walker_name(plan);
@@ -304,6 +332,18 @@ def render_frontend_impl(plan: jacsmith.BuildPlan, auth: bool = False, nt: str =
         L.append("}");
         L.append("");
     }
+    if ai {
+        L.append("impl app.doAsk(e: FormEvent) -> None {");
+        L.append("    e.preventDefault();");
+        L.append("    if not ai_q { return; }");
+        L.append("    ai_a = " + q + "Thinking…" + q + ";");
+        L.append("    result = root spawn ask_ai(question=ai_q);");
+        L.append("    if result.reports and len(result.reports) > 0 {");
+        L.append("        ai_a = str(result.reports[0]);");
+        L.append("    } else { ai_a = " + q + "No answer came back." + q + "; }");
+        L.append("}");
+        L.append("");
+    }
     L.append("impl app.loadItems -> None {");
     L.append("    result = root spawn " + lname + "();");
     L.append("    items = result.reports;");
@@ -320,13 +360,16 @@ def render_frontend_impl(plan: jacsmith.BuildPlan, auth: bool = False, nt: str =
     return NL.join(L) + NL;
 }
 
-def render_main_entry(plan: jacsmith.BuildPlan, copy: UiCopy, nt: str = "") -> str {
-    node_t = nt if nt else jacsmith._derive_node_name(plan);
+def render_main_entry(plan: minicoder.BuildPlan, copy: UiCopy, nt: str = "") -> str {
+    node_t = nt if nt else minicoder._derive_node_name(plan);
     q = DQ;
     wnames = ", ".join([e.name for e in plan.endpoints]);
-    if jacsmith.ACCESS and ("admin" in [jacsmith.ACCESS.get(e.name, "") for e in plan.endpoints]) {
+    if minicoder.ACCESS and ("admin" in [minicoder.ACCESS.get(e.name, "") for e in plan.endpoints]) {
         # code-injected walkers must be entry-imported or they never register
         wnames = wnames + ", claim_admin";
+    }
+    if minicoder.AI_MODE {
+        wnames = wnames + ", ask_ai";
     }
     L: list[str] = [];
     L.append(q + q + q + copy.title + " — entry point." + q + q + q);
@@ -347,9 +390,9 @@ def render_main_entry(plan: jacsmith.BuildPlan, copy: UiCopy, nt: str = "") -> s
 # ---- the two-user multi-user REST gate (owner=code) ------------------------
 
 def _mu_user(base: str, uname: str) -> str {
-    jacsmith._curl_json(base + "/user/register",
+    minicoder._curl_json(base + "/user/register",
         '{"identities":[{"type":"username","value":"' + uname + '"}],"credential":{"type":"password","password":"mupw12345"}}');
-    login = jacsmith._curl_json(base + "/user/login",
+    login = minicoder._curl_json(base + "/user/login",
         '{"identity":{"type":"username","value":"' + uname + '"},"credential":{"type":"password","password":"mupw12345"}}');
     try { return json.loads(login)["data"]["token"]; } except Exception { return ""; }
 }
@@ -357,33 +400,33 @@ def _mu_user(base: str, uname: str) -> str {
 """Serve the app and assert the MULTI-USER contract with two real users:
 private data must NOT cross user roots; shared data MUST; admin actions gate
 on the claimed role. All derived from the plan + access map — no model."""
-def gate_mu(project_dir: str, plan: jacsmith.BuildPlan, access: dict[str, str],
-            dry: bool, wait_s: int = 240) -> jacsmith.CheckResult {
-    if dry { return jacsmith.CheckResult(ok=True, errors=""); }
-    base = "http://localhost:" + str(jacsmith.SERVE_PORT);
-    subprocess.run(["pkill", "-f", "jac start .* --port " + str(jacsmith.SERVE_PORT)], capture_output=True);
-    srv = subprocess.Popen([JAC, "start", jacsmith.ENTRY_FILE, "--port", str(jacsmith.SERVE_PORT)],
+def gate_mu(project_dir: str, plan: minicoder.BuildPlan, access: dict[str, str],
+            dry: bool, wait_s: int = 240) -> minicoder.CheckResult {
+    if dry { return minicoder.CheckResult(ok=True, errors=""); }
+    base = "http://localhost:" + str(minicoder.SERVE_PORT);
+    subprocess.run(["pkill", "-f", "jac start .* --port " + str(minicoder.SERVE_PORT)], capture_output=True);
+    srv = subprocess.Popen([JAC, "start", minicoder.ENTRY_FILE, "--port", str(minicoder.SERVE_PORT)],
                            cwd=project_dir, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL);
     try {
         up = False;
         for _ in range(wait_s) {
             time.sleep(1);
-            if jacsmith._curl_json(base + "/user/register", "{}") { up = True; break; }
+            if minicoder._curl_json(base + "/user/register", "{}") { up = True; break; }
         }
-        if not up { return jacsmith.CheckResult(ok=False, errors="MU: server never came up"); }
+        if not up { return minicoder.CheckResult(ok=False, errors="MU: server never came up"); }
         ta = _mu_user(base, "mua");
         tb = _mu_user(base, "mub");
         if (not ta) or (not tb) {
-            return jacsmith.CheckResult(ok=False, errors="MU: could not establish two user sessions");
+            return minicoder.CheckResult(ok=False, errors="MU: could not establish two user sessions");
         }
         fails: list[str] = [];
         probes: dict[str, str] = {};
         # writes as user A
         for e in plan.endpoints {
-            if jacsmith._is_read_endpoint(e.name) { continue; }
+            if minicoder._is_read_endpoint(e.name) { continue; }
             acc = access.get(e.name, "priv");
             if acc == "admin" { continue; }
-            resp = jacsmith._curl_json(base + "/walker/" + e.name, e.example_json, ta);
+            resp = minicoder._curl_json(base + "/walker/" + e.name, e.example_json, ta);
             ok = False;
             try { ok = bool(json.loads(resp).get("ok", False)); }
             except Exception {}
@@ -398,13 +441,13 @@ def gate_mu(project_dir: str, plan: jacsmith.BuildPlan, access: dict[str, str],
         }
         # reads: isolation for priv, commons for shared
         for e in plan.endpoints {
-            if not jacsmith._is_read_endpoint(e.name) { continue; }
+            if not minicoder._is_read_endpoint(e.name) { continue; }
             acc = access.get(e.name, "priv");
-            ra = jacsmith._curl_json(base + "/walker/" + e.name, "{}", ta);
-            rb = jacsmith._curl_json(base + "/walker/" + e.name, "{}", tb);
+            ra = minicoder._curl_json(base + "/walker/" + e.name, "{}", ta);
+            rb = minicoder._curl_json(base + "/walker/" + e.name, "{}", tb);
             probe = "";
             for w in plan.endpoints {
-                if jacsmith._is_read_endpoint(w.name) { continue; }
+                if minicoder._is_read_endpoint(w.name) { continue; }
                 wacc = access.get(w.name, "priv");
                 if (acc == "shared") == (wacc == "shared") and w.name in probes {
                     probe = probes[w.name];
@@ -428,8 +471,8 @@ def gate_mu(project_dir: str, plan: jacsmith.BuildPlan, access: dict[str, str],
         # admin: A claims first, B must be refused; B's admin action forbidden
         has_admin = "admin" in [access.get(e.name, "") for e in plan.endpoints];
         if has_admin {
-            ca = jacsmith._curl_json(base + "/walker/claim_admin", "{}", ta);
-            cb = jacsmith._curl_json(base + "/walker/claim_admin", "{}", tb);
+            ca = minicoder._curl_json(base + "/walker/claim_admin", "{}", ta);
+            cb = minicoder._curl_json(base + "/walker/claim_admin", "{}", tb);
             ca_ok = False;
             try {
                 ja = json.loads(ca);
@@ -439,11 +482,11 @@ def gate_mu(project_dir: str, plan: jacsmith.BuildPlan, access: dict[str, str],
             if "taken" not in cb { fails.append("ADMIN: second claim (B) was not refused -> " + cb[:150]); }
             for e in plan.endpoints {
                 if access.get(e.name, "") != "admin" { continue; }
-                rb2 = jacsmith._curl_json(base + "/walker/" + e.name, e.example_json, tb);
+                rb2 = minicoder._curl_json(base + "/walker/" + e.name, e.example_json, tb);
                 if "forbidden" not in rb2 {
                     fails.append("ADMIN " + e.name + ": non-admin B was not refused -> " + rb2[:150]);
                 }
-                ra2 = jacsmith._curl_json(base + "/walker/" + e.name, e.example_json, ta);
+                ra2 = minicoder._curl_json(base + "/walker/" + e.name, e.example_json, ta);
                 ok2 = False;
                 try { ok2 = bool(json.loads(ra2).get("ok", False)); }
                 except Exception {}
@@ -451,9 +494,9 @@ def gate_mu(project_dir: str, plan: jacsmith.BuildPlan, access: dict[str, str],
             }
         }
         if fails {
-            return jacsmith.CheckResult(ok=False, errors="MULTI-USER: " + "\n".join(fails));
+            return minicoder.CheckResult(ok=False, errors="MULTI-USER: " + "\n".join(fails));
         }
-        return jacsmith.CheckResult(ok=True, errors="");
+        return minicoder.CheckResult(ok=True, errors="");
     } finally {
         srv.terminate();
     }
@@ -470,9 +513,9 @@ def _browse(args: list[str], cwd: str) -> str {
 """Drive the real rendered app: open, FILL the form with the plan's example
 payload via the template's stable ids, CLICK submit, assert the written value
 appears in the page, then screenshot the populated page for the vision judge."""
-def gate_ui(project_dir: str, plan: jacsmith.BuildPlan, shot_path: str, dry: bool, auth: bool = False) -> jacsmith.CheckResult {
-    if dry { return jacsmith.CheckResult(ok=True, errors=""); }
-    base = "http://localhost:" + str(jacsmith.SERVE_PORT);
+def gate_ui(project_dir: str, plan: minicoder.BuildPlan, shot_path: str, dry: bool, auth: bool = False, ai: bool = False) -> minicoder.CheckResult {
+    if dry { return minicoder.CheckResult(ok=True, errors=""); }
+    base = "http://localhost:" + str(minicoder.SERVE_PORT);
     fields = plan_fields(plan);
     wname = write_walker_name(plan);
     example: dict = {};
@@ -487,7 +530,7 @@ def gate_ui(project_dir: str, plan: jacsmith.BuildPlan, shot_path: str, dry: boo
             wa = _browse(["wait", "#a-email"], project_dir);
             if ("error" in wa.lower()) and ("time" in wa.lower()) {
                 _browse(["close"], project_dir);
-                return jacsmith.CheckResult(ok=False,
+                return minicoder.CheckResult(ok=False,
                     errors="UI: auth card never appeared: " + wa[:300]);
             }
             _browse(["fill", "#a-email", "uiuser@example.com"], project_dir);
@@ -498,7 +541,7 @@ def gate_ui(project_dir: str, plan: jacsmith.BuildPlan, shot_path: str, dry: boo
         w = _browse(["wait", "#f-submit"], project_dir);
         if ("error" in w.lower()) and ("time" in w.lower()) {
             _browse(["close"], project_dir);
-            return jacsmith.CheckResult(ok=False,
+            return minicoder.CheckResult(ok=False,
                 errors="UI: the form never became actionable — page blank or crashed: " + w[:300]);
         }
         for f in fields {
@@ -508,18 +551,40 @@ def gate_ui(project_dir: str, plan: jacsmith.BuildPlan, shot_path: str, dry: boo
         _browse(["click", "#f-submit"], project_dir);
         time.sleep(1.5);
         snap = _browse(["snapshot"], project_dir);
+        if ai {
+            _browse(["fill", "#ai-question", "Summarize what I have so far."], project_dir);
+            _browse(["click", "#ai-ask"], project_dir);
+            # the answer node appears instantly with a Thinking… placeholder;
+            # the gate is the LLM round-trip REPLACING it
+            answered = False;
+            tries = 0;
+            while tries < 12 {
+                time.sleep(5);
+                s2 = _browse(["snapshot"], project_dir);
+                if ("Thinking" not in s2) and (("ai-answer" in s2) or ("No answer" in s2) or True) {
+                    answered = "Thinking" not in s2;
+                    if answered { break; }
+                }
+                tries += 1;
+            }
+            if not answered {
+                _browse(["close"], project_dir);
+                return minicoder.CheckResult(ok=False,
+                    errors="UI: asked the AI but the answer never arrived (still thinking after 60s).");
+            }
+        }
         _browse(["screenshot", shot_path], project_dir);
         _browse(["close"], project_dir);
         probe = str(example.get(fields[0], "")) if fields else "";
         if probe and (probe not in snap) {
-            return jacsmith.CheckResult(ok=False,
+            return minicoder.CheckResult(ok=False,
                 errors="UI: filled and clicked the form but '" + probe
                     + "' never appeared in the page — the UI write/read loop is broken.");
         }
-        return jacsmith.CheckResult(ok=True, errors="");
+        return minicoder.CheckResult(ok=True, errors="");
     } except Exception as ex {
         try { _browse(["close"], project_dir); } except Exception {}
-        return jacsmith.CheckResult(ok=False, errors="UI: browser exercise failed: " + str(ex)[:300]);
+        return minicoder.CheckResult(ok=False, errors="UI: browser exercise failed: " + str(ex)[:300]);
     }
 }
 
@@ -530,25 +595,26 @@ walker build_fullstack {
     has task: str = "";
     has work_dir: str = "";
     has project_dir: str = "";
-    has plan: jacsmith.BuildPlan = jacsmith.BuildPlan();
-    has skeleton: jacsmith.Skeleton = jacsmith.Skeleton();
+    has plan: minicoder.BuildPlan = minicoder.BuildPlan();
+    has skeleton: minicoder.Skeleton = minicoder.Skeleton();
     has copy: UiCopy = UiCopy();
     has auth_mode: bool = False;
+    has ai_mode: bool = False;
     has access: dict[str, str] = {};
     has budget: int = 3;
     has dry_run: bool = False;
     has blocks: dict[str, str] = {};
     has log: list[str] = [];
-    has outcome: list[jacsmith.BuildResult] = [];
+    has outcome: list[minicoder.BuildResult] = [];
 
     can begin with Root entry {
         self.log.append("plan");
-        jacsmith.DECL_FILE = "endpoints.sv.jac";
-        jacsmith.IMPL_FILE = "endpoints.sv.impl.jac";
-        jacsmith.ENTRY_FILE = "main.jac";
-        self.plan = jacsmith.plan_build(self.task, jacsmith.BACKEND_DECL_GUIDE);
-        jacsmith._trace({"station": "plan", "kind": "slot", "slot": "plan_build",
-                         "input": {"task": self.task}, "output": jacsmith._plan_dict(self.plan)});
+        minicoder.DECL_FILE = "endpoints.sv.jac";
+        minicoder.IMPL_FILE = "endpoints.sv.impl.jac";
+        minicoder.ENTRY_FILE = "main.jac";
+        self.plan = minicoder.plan_build(self.task, minicoder.BACKEND_DECL_GUIDE);
+        minicoder._trace({"station": "plan", "kind": "slot", "slot": "plan_build",
+                         "input": {"task": self.task}, "output": minicoder._plan_dict(self.plan)});
         brief = self.plan.summary + " Endpoints: " + ", ".join([e.name for e in self.plan.endpoints]);
         try {
             self.copy = style_copy(brief, STYLE_JUDGMENT);
@@ -560,40 +626,45 @@ walker build_fullstack {
         if not self.copy.title { self.copy.title = self.plan.name; }
         if not self.copy.submit_label { self.copy.submit_label = "Add"; }
         self.auth_mode = wants_auth(self.task);
+        self.ai_mode = wants_ai(self.task);
+        minicoder.AI_MODE = self.ai_mode;
+        if self.ai_mode {
+            minicoder._trace({"station": "plan", "kind": "slot", "slot": "ai_mode", "output": True});
+        }
         if self.auth_mode {
             self.access = derive_access(self.plan, self.task);
-            jacsmith.ACCESS = self.access;
-            jacsmith._trace({"station": "plan", "kind": "slot", "slot": "access_map",
+            minicoder.ACCESS = self.access;
+            minicoder._trace({"station": "plan", "kind": "slot", "slot": "access_map",
                              "output": self.access});
         }
-        jacsmith._trace({"station": "plan", "kind": "slot", "slot": "style_copy",
+        minicoder._trace({"station": "plan", "kind": "slot", "slot": "style_copy",
                          "output": {"title": self.copy.title, "tagline": self.copy.tagline}});
-        s1 = here ++> jacsmith.ScaffoldSt();
-        s2 = s1 ++> jacsmith.DeclareSt();
-        s3 = s2 ++> jacsmith.ImplementSt();
-        s4 = s3 ++> jacsmith.VerifySt();
-        s4 ++> jacsmith.DoneSt();
+        s1 = here ++> minicoder.ScaffoldSt();
+        s2 = s1 ++> minicoder.DeclareSt();
+        s3 = s2 ++> minicoder.ImplementSt();
+        s4 = s3 ++> minicoder.VerifySt();
+        s4 ++> minicoder.DoneSt();
         visit s1;
     }
 
     # scaffold web-app + write the code-derived frontend (entry, page, impl, css)
-    can do_scaffold with jacsmith.ScaffoldSt entry {
+    can do_scaffold with minicoder.ScaffoldSt entry {
         self.log.append("scaffold");
         self.project_dir = os.path.join(self.work_dir, self.plan.name);
         if not self.dry_run {
             r = subprocess.run([JAC, "create", self.plan.name, "--kind", "web-app", "--force"],
                                cwd=self.work_dir, capture_output=True, text=True);
             if (r.returncode != 0) and (not os.path.isdir(self.project_dir)) {
-                self.outcome.append(jacsmith.BuildResult(ok=False, stage="scaffold",
+                self.outcome.append(minicoder.BuildResult(ok=False, stage="scaffold",
                     message=(r.stdout or "") + (r.stderr or ""), files=self.log));
                 disengage;
             }
-            jacsmith._write(self.project_dir, "plan.json",
-                            json.dumps(jacsmith._plan_dict(self.plan), indent=1));
-            jacsmith._write(self.project_dir, "main.jac", render_main_entry(self.plan, self.copy));
-            jacsmith._write(self.project_dir, "frontend.cl.jac", render_frontend_cl(self.plan, self.copy, self.auth_mode));
-            jacsmith._write(self.project_dir, "frontend.impl.jac", render_frontend_impl(self.plan, self.auth_mode));
-            jacsmith._write(self.project_dir, "frontend.css",
+            minicoder._write(self.project_dir, "plan.json",
+                            json.dumps(minicoder._plan_dict(self.plan), indent=1));
+            minicoder._write(self.project_dir, "main.jac", render_main_entry(self.plan, self.copy));
+            minicoder._write(self.project_dir, "frontend.cl.jac", render_frontend_cl(self.plan, self.copy, self.auth_mode, "", self.ai_mode));
+            minicoder._write(self.project_dir, "frontend.impl.jac", render_frontend_impl(self.plan, self.auth_mode, "", self.ai_mode));
+            minicoder._write(self.project_dir, "frontend.css",
                             render_style_css(accent_for(self.plan.name)));
             mc = os.path.join(self.project_dir, "components", "MessageCard.cl.jac");
             if os.path.exists(mc) { os.remove(mc); }
@@ -601,41 +672,41 @@ walker build_fullstack {
         visit [-->];
     }
 
-    can do_declare with jacsmith.DeclareSt entry {
+    can do_declare with minicoder.DeclareSt entry {
         self.log.append("declare");
-        self.skeleton = jacsmith.author_decls(self.plan, jacsmith.BACKEND_DECL_GUIDE);
-        jacsmith.force_stub_file(self.skeleton, self.plan);
-        jacsmith.write_all(self.project_dir, self.skeleton, self.dry_run);
-        res = jacsmith.decl_gates(self.project_dir, self.plan, self.skeleton, self.dry_run);
-        jacsmith._trace({"station": "declare", "kind": "slot", "slot": "author_decls", "round": 0,
-                         "output": jacsmith.render_decls(self.skeleton),
+        self.skeleton = minicoder.author_decls(self.plan, minicoder.BACKEND_DECL_GUIDE);
+        minicoder.force_stub_file(self.skeleton, self.plan);
+        minicoder.write_all(self.project_dir, self.skeleton, self.dry_run);
+        res = minicoder.decl_gates(self.project_dir, self.plan, self.skeleton, self.dry_run);
+        minicoder._trace({"station": "declare", "kind": "slot", "slot": "author_decls", "round": 0,
+                         "output": minicoder.render_decls(self.skeleton),
                          "gate_ok": res.ok, "gate_errors": res.errors[:2000]});
         n = 0;
         mech_n = 0;
         while (not res.ok) and (n < self.budget) {
-            if mech_n < 2 and jacsmith.mechanical_decl_repair(self.skeleton, self.plan, res.errors) {
+            if mech_n < 2 and minicoder.mechanical_decl_repair(self.skeleton, self.plan, res.errors) {
                 mech_n += 1;
                 self.log.append("decl-mech-repair");
-                jacsmith.force_stub_file(self.skeleton, self.plan);
-                jacsmith.write_all(self.project_dir, self.skeleton, self.dry_run);
-                res = jacsmith.decl_gates(self.project_dir, self.plan, self.skeleton, self.dry_run);
-                jacsmith._trace({"station": "declare", "kind": "slot", "slot": "mech_repair", "round": n,
-                                 "output": jacsmith.render_decls(self.skeleton),
+                minicoder.force_stub_file(self.skeleton, self.plan);
+                minicoder.write_all(self.project_dir, self.skeleton, self.dry_run);
+                res = minicoder.decl_gates(self.project_dir, self.plan, self.skeleton, self.dry_run);
+                minicoder._trace({"station": "declare", "kind": "slot", "slot": "mech_repair", "round": n,
+                                 "output": minicoder.render_decls(self.skeleton),
                                  "gate_ok": res.ok, "gate_errors": res.errors[:2000]});
                 continue;
             }
             self.log.append("decl-repair-" + str(n + 1));
-            self.skeleton = jacsmith.repair_decls(jacsmith.render_decls(self.skeleton), res.errors);
-            jacsmith.force_stub_file(self.skeleton, self.plan);
-            jacsmith.write_all(self.project_dir, self.skeleton, self.dry_run);
-            res = jacsmith.decl_gates(self.project_dir, self.plan, self.skeleton, self.dry_run);
-            jacsmith._trace({"station": "declare", "kind": "slot", "slot": "repair_decls", "round": n + 1,
-                             "output": jacsmith.render_decls(self.skeleton),
+            self.skeleton = minicoder.repair_decls(minicoder.render_decls(self.skeleton), res.errors);
+            minicoder.force_stub_file(self.skeleton, self.plan);
+            minicoder.write_all(self.project_dir, self.skeleton, self.dry_run);
+            res = minicoder.decl_gates(self.project_dir, self.plan, self.skeleton, self.dry_run);
+            minicoder._trace({"station": "declare", "kind": "slot", "slot": "repair_decls", "round": n + 1,
+                             "output": minicoder.render_decls(self.skeleton),
                              "gate_ok": res.ok, "gate_errors": res.errors[:2000]});
             n += 1;
         }
         if not res.ok {
-            self.outcome.append(jacsmith.BuildResult(ok=False, stage="decl", message=res.errors, files=self.log));
+            self.outcome.append(minicoder.BuildResult(ok=False, stage="decl", message=res.errors, files=self.log));
             disengage;
         }
         # the decl is now ground truth — re-render the frontend trio with the
@@ -645,45 +716,45 @@ walker build_fullstack {
             for d in self.skeleton.decls {
                 if ".impl." not in d.path { decl_src = d.source; }
             }
-            nt_real = jacsmith._first_node_type(decl_src);
+            nt_real = minicoder._first_node_type(decl_src);
             if nt_real != "Root" {
-                jacsmith._write(self.project_dir, "main.jac", render_main_entry(self.plan, self.copy, nt_real));
-                jacsmith._write(self.project_dir, "frontend.cl.jac", render_frontend_cl(self.plan, self.copy, self.auth_mode, nt_real));
-                jacsmith._write(self.project_dir, "frontend.impl.jac", render_frontend_impl(self.plan, self.auth_mode, nt_real));
+                minicoder._write(self.project_dir, "main.jac", render_main_entry(self.plan, self.copy, nt_real));
+                minicoder._write(self.project_dir, "frontend.cl.jac", render_frontend_cl(self.plan, self.copy, self.auth_mode, nt_real, self.ai_mode));
+                minicoder._write(self.project_dir, "frontend.impl.jac", render_frontend_impl(self.plan, self.auth_mode, nt_real, self.ai_mode));
             }
         }
         visit [-->];
     }
 
-    can do_implement with jacsmith.ImplementSt entry {
+    can do_implement with minicoder.ImplementSt entry {
         self.log.append("implement");
         for st in self.skeleton.impl_targets {
-            self.blocks = jacsmith.fill_impl_blocks(self.skeleton, st, "", self.blocks,
+            self.blocks = minicoder.fill_impl_blocks(self.skeleton, st, "", self.blocks,
                                                     "implement", 0, self.project_dir, self.dry_run);
-            body = jacsmith.assemble_impl(st, self.blocks);
-            jacsmith.update_impl_source(self.skeleton, st.file, body);
-            if not self.dry_run { jacsmith._write(self.project_dir, st.file, body); }
+            body = minicoder.assemble_impl(st, self.blocks);
+            minicoder.update_impl_source(self.skeleton, st.file, body);
+            if not self.dry_run { minicoder._write(self.project_dir, st.file, body); }
         }
-        res = jacsmith.impl_gates(self.project_dir, self.skeleton, self.dry_run);
-        jacsmith._trace({"station": "implement", "kind": "gate", "gate": "build", "round": 0,
+        res = minicoder.impl_gates(self.project_dir, self.skeleton, self.dry_run);
+        minicoder._trace({"station": "implement", "kind": "gate", "gate": "build", "round": 0,
                          "gate_ok": res.ok, "gate_errors": res.errors[:2000]});
         n = 0;
         while (not res.ok) and (n < self.budget) {
             self.log.append("build-repair-" + str(n + 1));
             for st in self.skeleton.impl_targets {
-                self.blocks = jacsmith.fill_impl_blocks(self.skeleton, st, res.errors, self.blocks,
+                self.blocks = minicoder.fill_impl_blocks(self.skeleton, st, res.errors, self.blocks,
                                                         "implement", n + 1, self.project_dir, self.dry_run);
-                body = jacsmith.assemble_impl(st, self.blocks);
-                jacsmith.update_impl_source(self.skeleton, st.file, body);
-                if not self.dry_run { jacsmith._write(self.project_dir, st.file, body); }
+                body = minicoder.assemble_impl(st, self.blocks);
+                minicoder.update_impl_source(self.skeleton, st.file, body);
+                if not self.dry_run { minicoder._write(self.project_dir, st.file, body); }
             }
-            res = jacsmith.impl_gates(self.project_dir, self.skeleton, self.dry_run);
-            jacsmith._trace({"station": "implement", "kind": "gate", "gate": "build", "round": n + 1,
+            res = minicoder.impl_gates(self.project_dir, self.skeleton, self.dry_run);
+            minicoder._trace({"station": "implement", "kind": "gate", "gate": "build", "round": n + 1,
                              "gate_ok": res.ok, "gate_errors": res.errors[:2000]});
             n += 1;
         }
         if not res.ok {
-            self.outcome.append(jacsmith.BuildResult(ok=False, stage="build", message=res.errors, files=self.log));
+            self.outcome.append(minicoder.BuildResult(ok=False, stage="build", message=res.errors, files=self.log));
             disengage;
         }
         visit [-->];
@@ -691,79 +762,79 @@ walker build_fullstack {
 
     # serve (REST regression) → click-through browser gate → vision verdict →
     # bounded CSS-only refine round ("the switcharoo")
-    can do_verify with jacsmith.VerifySt entry {
+    can do_verify with minicoder.VerifySt entry {
         self.log.append("verify");
         if self.auth_mode {
             res = gate_mu(self.project_dir, self.plan, self.access, self.dry_run, 240);
         } else {
-            res = jacsmith.gate_serve(self.project_dir, self.plan.endpoints, self.dry_run, 240);
+            res = minicoder.gate_serve(self.project_dir, self.plan.endpoints, self.dry_run, 240);
         }
-        jacsmith._trace({"station": "verify", "kind": "gate", "gate": "runtime", "round": 0,
+        minicoder._trace({"station": "verify", "kind": "gate", "gate": "runtime", "round": 0,
                          "gate_ok": res.ok, "gate_errors": res.errors[:2000]});
         if not res.ok {
-            self.outcome.append(jacsmith.BuildResult(ok=False, stage="runtime", message=res.errors, files=self.log));
+            self.outcome.append(minicoder.BuildResult(ok=False, stage="runtime", message=res.errors, files=self.log));
             disengage;
         }
         if not self.dry_run {
             shot = os.path.join(self.project_dir, "ui_shot.png");
             # keep the server alive for the browser: gate_serve terminated it,
             # so start it again for the UI leg
-            srv = subprocess.Popen([JAC, "start", "main.jac", "--port", str(jacsmith.SERVE_PORT)],
+            srv = subprocess.Popen([JAC, "start", "main.jac", "--port", str(minicoder.SERVE_PORT)],
                                    cwd=self.project_dir, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL);
             try {
                 time.sleep(8);
-                ui = gate_ui(self.project_dir, self.plan, shot, self.dry_run, self.auth_mode);
-                jacsmith._trace({"station": "verify", "kind": "gate", "gate": "ui", "round": 0,
+                ui = gate_ui(self.project_dir, self.plan, shot, self.dry_run, self.auth_mode, self.ai_mode);
+                minicoder._trace({"station": "verify", "kind": "gate", "gate": "ui", "round": 0,
                                  "gate_ok": ui.ok, "gate_errors": ui.errors[:2000]});
                 if not ui.ok {
-                    self.outcome.append(jacsmith.BuildResult(ok=False, stage="ui", message=ui.errors, files=self.log));
+                    self.outcome.append(minicoder.BuildResult(ok=False, stage="ui", message=ui.errors, files=self.log));
                     disengage;
                 }
                 if os.path.exists(shot) {
                     try {
                         verdict = judge_ui(Image(shot), STYLE_JUDGMENT);
-                        jacsmith._trace({"station": "verify", "kind": "slot", "slot": "judge_ui",
+                        minicoder._trace({"station": "verify", "kind": "slot", "slot": "judge_ui",
                                          "output": {"renders": verdict.renders, "quality": verdict.quality,
                                                     "issues": verdict.issues}});
                         if verdict.issues and verdict.quality < 4 {
                             self.log.append("restyle");
                             css_path = os.path.join(self.project_dir, "frontend.css");
                             cur = open(css_path).read();
-                            newcss = jacsmith.strip_fences(restyle_css(
+                            newcss = minicoder.strip_fences(restyle_css(
                                 cur, "\n".join(verdict.issues) + "\n\n" + STYLE_JUDGMENT));
                             if newcss and (":root" in newcss or "." in newcss) {
-                                jacsmith._write(self.project_dir, "frontend.css", newcss);
+                                minicoder._write(self.project_dir, "frontend.css", newcss);
                                 clp = os.path.join(self.project_dir, "frontend.cl.jac");
                                 cl_src = open(clp).read();
                                 cl_new = re.sub(r"glob PAGE_CSS: str = \".*\";",
                                     "glob PAGE_CSS: str = " + json.dumps(css_one_line(newcss)) + ";",
                                     cl_src, count=1);
-                                jacsmith._write(self.project_dir, "frontend.cl.jac", cl_new);
-                                chk = jacsmith.gate_check(self.project_dir, self.dry_run);
+                                minicoder._write(self.project_dir, "frontend.cl.jac", cl_new);
+                                chk = minicoder.gate_check(self.project_dir, self.dry_run);
                                 if not chk.ok {
-                                    jacsmith._write(self.project_dir, "frontend.cl.jac", cl_src);
-                                    jacsmith._write(self.project_dir, "frontend.css", cur);
+                                    minicoder._write(self.project_dir, "frontend.cl.jac", cl_src);
+                                    minicoder._write(self.project_dir, "frontend.css", cur);
                                 } else {
-                                    jacsmith._trace({"station": "verify", "kind": "slot", "slot": "restyle_css",
+                                    minicoder._trace({"station": "verify", "kind": "slot", "slot": "restyle_css",
                                                      "output": newcss[:1500]});
                                     # fresh server so the rebuilt client ships the new styles
                                     srv.terminate();
                                     time.sleep(1);
-                                    srv = subprocess.Popen([JAC, "start", "main.jac", "--port", str(jacsmith.SERVE_PORT)],
+                                    srv = subprocess.Popen([JAC, "start", "main.jac", "--port", str(minicoder.SERVE_PORT)],
                                                            cwd=self.project_dir, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL);
                                     time.sleep(12);
                                     ui2 = gate_ui(self.project_dir, self.plan, shot, self.dry_run);
-                                    jacsmith._trace({"station": "verify", "kind": "gate", "gate": "ui", "round": 1,
+                                    minicoder._trace({"station": "verify", "kind": "gate", "gate": "ui", "round": 1,
                                                      "gate_ok": ui2.ok, "gate_errors": ui2.errors[:1000]});
                                     if not ui2.ok {
-                                        jacsmith._write(self.project_dir, "frontend.cl.jac", cl_src);
-                                        jacsmith._write(self.project_dir, "frontend.css", cur);
+                                        minicoder._write(self.project_dir, "frontend.cl.jac", cl_src);
+                                        minicoder._write(self.project_dir, "frontend.css", cur);
                                     }
                                 }
                             }
                         }
                     } except Exception as vex {
-                        jacsmith._trace({"station": "verify", "kind": "slot", "slot": "judge_ui_error",
+                        minicoder._trace({"station": "verify", "kind": "slot", "slot": "judge_ui_error",
                                          "output": str(vex)[:300]});
                     }
                 }
@@ -774,26 +845,28 @@ walker build_fullstack {
         visit [-->];
     }
 
-    can do_done with jacsmith.DoneSt entry {
-        jacsmith.DECL_FILE = "main.sv.jac";
-        jacsmith.IMPL_FILE = "main.sv.impl.jac";
-        jacsmith.ENTRY_FILE = "main.sv.jac";
-        jacsmith.ACCESS = {};
-        jacsmith._trace({"station": "done", "kind": "run", "gate_ok": True, "path": self.log});
-        self.outcome.append(jacsmith.BuildResult(ok=True, stage="done",
+    can do_done with minicoder.DoneSt entry {
+        minicoder.DECL_FILE = "main.sv.jac";
+        minicoder.IMPL_FILE = "main.sv.impl.jac";
+        minicoder.ENTRY_FILE = "main.sv.jac";
+        minicoder.ACCESS = {};
+        minicoder.AI_MODE = False;
+        minicoder._trace({"station": "done", "kind": "run", "gate_ok": True, "path": self.log});
+        self.outcome.append(minicoder.BuildResult(ok=True, stage="done",
             message="fullstack app built, clicked through, and verified", files=self.log));
     }
 }
 
 
 """Spawn the fullstack task-graph."""
-def smith_full(task: str, work_dir: str, dry_run: bool = False) -> jacsmith.BuildResult {
+def build_full(task: str, work_dir: str, dry_run: bool = False) -> minicoder.BuildResult {
     w = root spawn build_fullstack(task=task, work_dir=work_dir, dry_run=dry_run);
-    jacsmith.DECL_FILE = "main.sv.jac";
-    jacsmith.IMPL_FILE = "main.sv.impl.jac";
-    jacsmith.ENTRY_FILE = "main.sv.jac";
-    jacsmith.ACCESS = {};
-    return w.outcome[0] if w.outcome else jacsmith.BuildResult(ok=False, stage="none", message="no report");
+    minicoder.DECL_FILE = "main.sv.jac";
+    minicoder.IMPL_FILE = "main.sv.impl.jac";
+    minicoder.ENTRY_FILE = "main.sv.jac";
+    minicoder.ACCESS = {};
+    minicoder.AI_MODE = False;
+    return w.outcome[0] if w.outcome else minicoder.BuildResult(ok=False, stage="none", message="no report");
 }
 
 glob AUTH_WORDS: list[str] = ["auth", "login", "user", "users", "account", "accounts", "multi-user", "signup", "private"];
@@ -808,7 +881,7 @@ def wants_auth(task: str) -> bool {
 """Mechanical access classification (owner=code): shared/team vocabulary in the
 endpoint name -> the commons; admin vocabulary (when the task mentions admin)
 -> role-gated; everything else -> private per-user."""
-def derive_access(plan: jacsmith.BuildPlan, task: str) -> dict[str, str] {
+def derive_access(plan: minicoder.BuildPlan, task: str) -> dict[str, str] {
     m: dict[str, str] = {};
     t = task.lower();
     for e in plan.endpoints {
@@ -822,6 +895,14 @@ def derive_access(plan: jacsmith.BuildPlan, task: str) -> dict[str, str] {
         }
     }
     return m;
+}
+
+glob AI_WORDS: list[str] = ["ai", "assistant", "agentic", "ask-ai", "chatbot", "intelligent", "llm"];
+
+"""Word-bounded on both sides — 'ai' must not fire inside 'maintain'."""
+def wants_ai(task: str) -> bool {
+    lowered = " " + task.lower().replace(",", " ").replace(".", " ").replace(":", " ") + " ";
+    return any([(" " + w + " ") in lowered for w in AI_WORDS]);
 }
 
 glob FRONT_WORDS: list[str] = ["ui", "frontend", "front-end", "web app", "webapp", "page", "website", "fullstack", "full-stack", "interface"];

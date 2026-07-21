@@ -79,7 +79,7 @@ elif [ ! -f "$DIR/main.jac" ]; then
         | tar xz -C "$DIR" --strip-components=1 2>/dev/null && ok=1 || true
     fi
   fi
-  if [ -z "$ok" ] && [ -f "./main.jac" ] && [ -f "./jacsmith.jac" ]; then
+  if [ -z "$ok" ] && [ -f "./main.jac" ] && [ -f "./minicoder.jac" ]; then
     # running from inside a checkout (pre-release / private repo)
     cp -R ./. "$DIR"/ && ok=1
   fi

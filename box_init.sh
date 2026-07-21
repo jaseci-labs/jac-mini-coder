@@ -1,5 +1,5 @@
 #!/bin/bash
-# box_init.sh — bring up a (fresh or rebooted) GPU box for JacSmith student runs.
+# box_init.sh — bring up a (fresh or rebooted) GPU box for Jac Mini Coder student runs.
 # Idempotent: safe to re-run. Driven from the Mac; everything happens over ssh/scp.
 #
 #   ./box_init.sh                      # default host ubuntu@216.81.248.77
@@ -9,14 +9,14 @@
 #   1. native jac binary (jaseci install.sh)            → ~/.local/bin/jac
 #   2. ollama + systemd override (ctx 16384, keepalive) → gemma4:e4b pulled
 #   3. removes the obsolete jacshim service/artifacts (pre-root-cause workaround)
-#   4. ships jacsmith.jac / run_smith.jac / gen_pairs.jac / jac.toml (from box.toml)
-#   5. jac install (llm capability closure into ~/jacsmith/.jac/venv)
+#   4. ships minicoder.jac / cli.jac / gen_pairs.jac / jac.toml (from box.toml)
+#   5. jac install (llm capability closure into ~/jac-mini-coder/.jac/venv)
 #   6. smoke test: typed byLLM probe (FLAT/NESTED) on gemma4:e4b — must print "ok"
 #
 # After it passes, a student run is:
-#   ssh $BOX 'cd ~/jacsmith && export PATH="$HOME/.local/bin:$PATH" \
-#     SMITH_MODEL="ollama_chat/gemma4:e4b" SMITH_TRACE=$HOME/jacsmith/trace.jsonl; \
-#     jac run run_smith.jac -- "<task>" $HOME/jacsmith/out'
+#   ssh $BOX 'cd ~/jac-mini-coder && export PATH="$HOME/.local/bin:$PATH" \
+#     JACMINI_MODEL="ollama_chat/gemma4:e4b" JACMINI_TRACE=$HOME/jac-mini-coder/trace.jsonl; \
+#     jac run cli.jac -- "<task>" $HOME/jac-mini-coder/out'
 set -euo pipefail
 
 BOX="${1:-ubuntu@216.81.248.77}"
@@ -44,30 +44,30 @@ ollama list'
 
 step "3 · remove obsolete shim (pre-root-cause workaround)"
 "${SSH[@]}" 'sudo systemctl disable --now jacshim 2>/dev/null; sudo rm -f /etc/systemd/system/jacshim.service; sudo systemctl daemon-reload
-rm -f ~/jacsmith/mitm_ollama.py ~/jacsmith/byllm_adapter.py ~/jacsmith/shim*.jsonl ~/jacsmith/shim_err.log ~/jacsmith/adapter.jsonl ~/jacsmith/litellm_config.yaml 2>/dev/null; echo "shim gone"'
+rm -f ~/jac-mini-coder/mitm_ollama.py ~/jac-mini-coder/byllm_adapter.py ~/jac-mini-coder/shim*.jsonl ~/jac-mini-coder/shim_err.log ~/jac-mini-coder/adapter.jsonl ~/jac-mini-coder/litellm_config.yaml 2>/dev/null; echo "shim gone"'
 
-step "4 · ship jacsmith"
-"${SSH[@]}" 'mkdir -p ~/jacsmith'
-scp -q "$HERE/jacsmith.jac" "$HERE/run_smith.jac" "$HERE/gen_pairs.jac" "$BOX:~/jacsmith/"
-scp -q "$HERE/box.toml" "$BOX:~/jacsmith/jac.toml"
-echo "shipped: jacsmith.jac run_smith.jac gen_pairs.jac jac.toml"
+step "4 · ship minicoder"
+"${SSH[@]}" 'mkdir -p ~/jac-mini-coder'
+scp -q "$HERE/minicoder.jac" "$HERE/cli.jac" "$HERE/gen_pairs.jac" "$BOX:~/jac-mini-coder/"
+scp -q "$HERE/box.toml" "$BOX:~/jac-mini-coder/jac.toml"
+echo "shipped: minicoder.jac cli.jac gen_pairs.jac jac.toml"
 
 step "5 · jac install (llm closure)"
-"${SSH[@]}" 'cd ~/jacsmith && export PATH="$HOME/.local/bin:$PATH" && jac install 2>&1 | tail -1'
+"${SSH[@]}" 'cd ~/jac-mini-coder && export PATH="$HOME/.local/bin:$PATH" && jac install 2>&1 | tail -1'
 
 step "5b · byllm adapter service (embedded-litellm segfault workaround)"
 # On glibc 2.39 hosts (Ubuntu 24.04) the jac binary's embedded runtime
 # segfaults inside litellm's live transport (venv python is fine; httpx-in-
 # embedded is fine; MockLLM is fine). Workaround: byllm http_client mode ->
 # this adapter (system python3) -> ollama. Harmless to install everywhere.
-scp -q "$HERE/byllm_adapter.py" "$BOX:~/jacsmith/" 2>/dev/null || true
-"${SSH[@]}" 'if [ -f ~/jacsmith/byllm_adapter.py ]; then
+scp -q "$HERE/byllm_adapter.py" "$BOX:~/jac-mini-coder/" 2>/dev/null || true
+"${SSH[@]}" 'if [ -f ~/jac-mini-coder/byllm_adapter.py ]; then
 sudo tee /etc/systemd/system/jacadapter.service >/dev/null <<UNIT
 [Unit]
 Description=byllm http_client to ollama adapter
 After=ollama.service
 [Service]
-ExecStart=/usr/bin/python3 /home/ubuntu/jacsmith/byllm_adapter.py
+ExecStart=/usr/bin/python3 /home/ubuntu/jac-mini-coder/byllm_adapter.py
 Restart=always
 User=ubuntu
 [Install]
@@ -85,7 +85,7 @@ printf "#!/bin/sh\nexec /usr/bin/google-chrome --no-sandbox --disable-gpu --disa
 chmod +x ~/bin/chrome-wrap && echo "JACBROWSER_CHROME wrapper ready (export JACBROWSER_CHROME=\$HOME/bin/chrome-wrap)"'
 
 step "6 · smoke test — typed byLLM probe on gemma4:e4b"
-"${SSH[@]}" 'cat > ~/jacsmith/_probe.jac <<'"'"'EOF'"'"'
+"${SSH[@]}" 'cat > ~/jac-mini-coder/_probe.jac <<'"'"'EOF'"'"'
 """Smoke: typed slots incl. a "name" field (the gemma-sniff trap) + nesting."""
 import time;
 
@@ -107,13 +107,13 @@ with entry {
     print(f"NESTED ok {round(time.time()-t,1)}s: {x.name} items={len(x.items)}");
 }
 EOF
-cd ~/jacsmith && export PATH="$HOME/.local/bin:$PATH"
-if timeout 300 jac run _probe.jac; then echo "DIRECT MODE OK — use SMITH_MODEL=ollama_chat/gemma4:e4b"
+cd ~/jac-mini-coder && export PATH="$HOME/.local/bin:$PATH"
+if timeout 300 jac run _probe.jac; then echo "DIRECT MODE OK — use JACMINI_MODEL=ollama_chat/gemma4:e4b"
 else echo "direct mode crashed (glibc 2.39 embedded-litellm segfault) — trying http_client mode"
      printf "import from jaclang.byllm.lib { Model }\nglob llm: Model = Model(model_name=\"gemma4:e4b\", api_key=\"local\", config={\"http_client\": True, \"api_base\": \"http://127.0.0.1:11438\", \"native_tools\": True});\nobj Flat { has name: str = \"\"; has count: int = 0; }\ndef make_flat(hint: str) -> Flat by llm(temperature=0.1);\nsem make_flat = \"Produce a Flat for the hint.\";\nwith entry { f = make_flat(\"alpha count 2\"); print(\"HTTP MODE OK:\", f.name, f.count); }\n" > /tmp/_probe_http.jac
-     timeout 300 jac run /tmp/_probe_http.jac && echo "USE: SMITH_MODEL=gemma4:e4b SMITH_HTTP_BASE=http://127.0.0.1:11438"
+     timeout 300 jac run /tmp/_probe_http.jac && echo "USE: JACMINI_MODEL=gemma4:e4b JACMINI_HTTP_BASE=http://127.0.0.1:11438"
 fi'
 
 step "done"
 echo "Box ready. Student run example (pick the mode the smoke test reported):"
-echo "  ssh $BOX 'cd ~/jacsmith && export PATH=\"\$HOME/.local/bin:\$PATH\" SMITH_MODEL=gemma4:e4b SMITH_HTTP_BASE=http://127.0.0.1:11438; jac run run_smith.jac -- \"Build a tiny notes API...\" \$HOME/jacsmith/out'"
+echo "  ssh $BOX 'cd ~/jac-mini-coder && export PATH=\"\$HOME/.local/bin:\$PATH\" JACMINI_MODEL=gemma4:e4b JACMINI_HTTP_BASE=http://127.0.0.1:11438; jac run cli.jac -- \"Build a tiny notes API...\" \$HOME/jac-mini-coder/out'"

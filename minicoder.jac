@@ -1,4 +1,4 @@
-"""jacsmith — the jac-mini-coder engine: compiled task-graphs for writing Jac.
+"""minicoder — the jac-mini-coder engine: compiled task-graphs for writing Jac.
 
 The procedure of authoring a Jac backend is the program, not a prose workflow:
 
@@ -206,14 +206,14 @@ def _write(work_dir: str, rel: str, content: str) {
     }
 }
 
-glob TRACE_PATH: str = os.environ.get("SMITH_TRACE", "");
+glob TRACE_PATH: str = os.environ.get("JACMINI_TRACE", os.environ.get("SMITH_TRACE", ""));
 glob TRACE_HOOK: Callable[[dict], None] | None = None;   # live event tap — the TUI registers a renderer here
 
 """Flywheel tap: append one JSONL record per slot call / gate verdict.
 Slot records carry full input+output; the next gate record is their free label."""
 def _trace(rec: dict) {
     rec["ts"] = time.time();
-    rec["model"] = os.environ.get("SMITH_MODEL", "default");
+    rec["model"] = os.environ.get("JACMINI_MODEL", os.environ.get("SMITH_MODEL", "default"));
     if TRACE_HOOK is not None {
         try { TRACE_HOOK(rec); } except Exception {}
     }
@@ -862,22 +862,34 @@ def force_stub_file(sk: Skeleton, plan: BuildPlan) {
             if "walker ask_ai" not in d.source {
                 nt_ai = _derive_node_name(plan);
                 header_ai = "import from jaclang.byllm.lib { Model }\n"
-                    + "import os;\n\n"
-                    + "# local-first model wiring, with the http-adapter fallback for hosts\n"
-                    + "# where the embedded runtime cannot use litellm's live transport\n"
-                    + "glob AI_HTTP: str = os.environ.get(\"JAC_AI_HTTP_BASE\", os.environ.get(\"SMITH_HTTP_BASE\", \"\"));\n"
+                    + "import os;\n"
+                    + "import json;\n\n"
+                    + "# the app's AI follows your jac-mini-coder model choice: env first\n"
+                    + "# (JAC_AI_MODEL / JAC_AI_API_KEY / JAC_AI_HTTP_BASE), then the saved\n"
+                    + "# ~/.jac-mini-coder/config.json, then local ollama\n"
+                    + "def _ai_conf(field: str) -> str {\n"
+                    + "    try {\n"
+                    + "        with open(os.path.expanduser(\"~/.jac-mini-coder/config.json\")) as f {\n"
+                    + "            return str(json.load(f).get(field, \"\"));\n"
+                    + "        }\n"
+                    + "    } except Exception { return \"\"; }\n"
+                    + "}\n\n"
+                    + "glob AI_HTTP: str = os.environ.get(\"JAC_AI_HTTP_BASE\", os.environ.get(\"JACMINI_HTTP_BASE\", os.environ.get(\"SMITH_HTTP_BASE\", _ai_conf(\"http_base\"))));\n"
+                    + "glob AI_MODEL: str = os.environ.get(\"JAC_AI_MODEL\", \"\") or _ai_conf(\"model\") or \"ollama_chat/gemma4:e4b\";\n"
+                    + "glob AI_KEY: str = os.environ.get(\"JAC_AI_API_KEY\", \"\") or _ai_conf(\"api_key\");\n"
                     + "glob llm: Model = Model(\n"
-                    + "    model_name=(\"gemma4:e4b\" if AI_HTTP else \"ollama_chat/gemma4:e4b\"),\n"
-                    + "    api_key=(\"local\" if AI_HTTP else \"\"),\n"
+                    + "    model_name=(AI_MODEL.split(\"/\")[-1] if AI_HTTP else AI_MODEL),\n"
+                    + "    api_key=(\"local\" if AI_HTTP else AI_KEY),\n"
                     + "    config=({\"http_client\": True, \"api_base\": AI_HTTP, \"native_tools\": True} if AI_HTTP else {\"native_tools\": True}),\n"
-                    + "    call_params={\"think\": False}\n"
+                    + "    call_params=({\"think\": False} if AI_MODEL.startswith(\"ollama\") else {})\n"
                     + ");\n\n"
                     + "def ai_answer(question: str, context: str) -> str by llm(temperature=0.3);\n"
                     + "sem ai_answer = \"Answer the user's question using ONLY their data given as context. Be brief and specific; if the context has no answer, say so plainly.\";\n"
                     + "sem ai_answer.question = \"The user's question.\";\n"
                     + "sem ai_answer.context = \"The user's stored items, serialized.\";\n\n";
+                kw_ai = "walker" if ACCESS else "walker:pub";
                 d.source = header_ai + d.source.rstrip()
-                    + "\n\nwalker ask_ai {\n    has question: str = \"\";\n    has reports: list[str] = [];\n    can run with Root entry;\n}\n";
+                    + "\n\n" + kw_ai + " ask_ai {\n    has question: str = \"\";\n    has reports: list[str] = [];\n    can run with Root entry;\n}\n";
             }
         }
     }
@@ -1406,7 +1418,7 @@ walker build_backend {
 }
 
 
-"""Load a jacsmith-built project from disk into the Skeleton + BuildPlan the
+"""Load a minicoder-built project from disk into the Skeleton + BuildPlan the
 gates operate on (the plan.json contract + the two source files)."""
 def load_project(project_dir: str) -> tuple {
     plan = BuildPlan();
@@ -1487,7 +1499,7 @@ walker add_endpoint {
         (self.plan, self.skeleton) = load_project(self.project_dir);
         if not self.skeleton.decls {
             self.outcome.append(BuildResult(ok=False, stage="sense",
-                message="no jacsmith project at " + self.project_dir, files=self.log));
+                message="no minicoder project at " + self.project_dir, files=self.log));
             disengage;
         }
         self.new_ep = plan_add(self.task, render_decls(self.skeleton));
@@ -1690,7 +1702,7 @@ walker fix_bug {
         (self.plan, self.skeleton) = load_project(self.project_dir);
         if not self.skeleton.decls {
             self.outcome.append(BuildResult(ok=False, stage="sense",
-                message="no jacsmith project at " + self.project_dir, files=self.log));
+                message="no minicoder project at " + self.project_dir, files=self.log));
             disengage;
         }
         sigs: list[str] = [];

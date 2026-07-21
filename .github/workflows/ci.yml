@@ -16,6 +16,6 @@ jobs:
       - name: project deps
         run: jac install || true
       - name: jac check
-        run: jac check main.jac jacsmith.jac cli.jac gen_pairs.jac
+        run: jac check main.jac minicoder.jac cli.jac gen_pairs.jac
       - name: shell scripts parse
         run: bash -n install.sh && bash -n box_init.sh

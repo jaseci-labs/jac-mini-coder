@@ -1,4 +1,4 @@
-# Canonical jac.toml for the GPU-box jacsmith project (~/jacsmith/jac.toml).
+# Canonical jac.toml for the GPU-box minicoder project (~/jac-mini-coder/jac.toml).
 # Shipped by box_init.sh. The two byllm settings are REQUIRED for gemma models:
 #   native_tools=true  defuses byLLM's gemma name-sniff, whose tool-call recovery
 #                      eats any typed JSON output that has a top-level "name" field
@@ -6,9 +6,9 @@
 # (see memory: byllm-gemma-sniff; upstream fix in jaseci-labs/jac PR #7493)
 
 [project]
-name = "jacsmith"
+name = "minicoder"
 version = "0.1.0"
-entry-point = "jacsmith.jac"
+entry-point = "minicoder.jac"
 
 [dependencies]
 litellm = "latest"
