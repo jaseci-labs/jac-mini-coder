@@ -210,10 +210,15 @@ def _ask_key(saved_key: str, env_name: str = "", env_present: str = "") -> dict[
 """Local path: pick an installed ollama model by number, or type any name."""
 def ask_local -> dict[str, str] {
     models = ollama_models();
-    console.print("  [bold]Local model (ollama)[/bold] [dim]— free, private[/dim]");
+    console.print("  [bold]Local model (ollama)[/bold] [dim]— free, private, offline[/dim]");
+    console.print("    [dim]default [green]gemma4:e4b[/green] (~4B, ~10 GB) runs the whole harness on one[/dim]");
+    console.print("    [dim]consumer GPU or Apple-silicon laptop — served-and-verified backends in[/dim]");
+    console.print("    [dim]~20 s, plus fullstack apps, auth/multi-user, and agentic (by-llm) apps.[/dim]");
+    console.print("    [dim]gemma4:e2b (~2B) also clears every route; qwen3:8b etc. work too.[/dim]");
     i = 1;
     for mname in models {
-        console.print(f"    [orange3]{i}.[/orange3] {mname}");
+        star = " [green]←[/green]" if mname.startswith("gemma4:e4b") else "";
+        console.print(f"    [orange3]{i}.[/orange3] {mname}{star}");
         i += 1;
     }
     if not models {
@@ -283,25 +288,36 @@ def ask_custom(saved_key: str) -> dict[str, str] {
 
 """The model config screen (/model or /config): local ollama, Z.ai Coding
 Plan, or any custom litellm spec + base URL. Returns {} on cancel."""
-def model_config(cur: str, saved_key: str) -> dict[str, str] {
-    console.print("[bold]Model config[/bold]" + (f" [dim]— current: {cur}[/dim]" if cur else ""));
-    console.print("  [orange3]1.[/orange3] Local (ollama) [dim]— free, private; pick from installed models[/dim]");
+def model_config(cur: str, saved_key: str, intro: bool = False) -> dict[str, str] {
+    if intro {
+        console.print("[bold]Choose your model[/bold] [dim]— change any time with /model[/dim]");
+        console.print("  [dim]The harness carries the discipline, so a small local model is enough:[/dim]");
+        console.print("  [dim]gemma4 (~4B) on your own machine builds served-and-verified Jac in ~20 s.[/dim]");
+        console.print("  [dim]Prefer a hosted model? A coding plan or any litellm API works too.[/dim]");
+    } else {
+        console.print("[bold]Model config[/bold]" + (f" [dim]— current: {cur}[/dim]" if cur else ""));
+    }
+    console.print("  [orange3]1.[/orange3] Local (ollama) [dim]— free, private, offline; gemma4:e4b default[/dim]");
     console.print("  [orange3]2.[/orange3] Z.ai Coding Plan [dim]— subscription key; glm-4.7 / glm-5.1 / …[/dim]");
-    console.print("  [orange3]3.[/orange3] Custom litellm [dim]— any provider/model + key + optional base URL[/dim]");
-    console.print("  [dim]saved to " + CONF_PATH + "[/dim]");
+    console.print("  [orange3]3.[/orange3] Other API [dim]— any litellm provider/model + key (+ base URL)[/dim]");
+    console.print("  [dim]saved to " + CONF_PATH + " (chmod 600)[/dim]");
     choice = "";
-    try { choice = input("  1/2/3 (blank = cancel) > ").strip(); }
+    try { choice = input("  1/2/3 > ").strip(); }
     except (EOFError, KeyboardInterrupt) { return {}; }
     if choice == "1" { return ask_local(); }
     if choice == "2" { return ask_zai(saved_key); }
     if choice == "3" { return ask_custom(saved_key); }
+    if intro and (not choice) {
+        # first run, no choice → default local so the TUI is usable immediately
+        return ask_local();
+    }
     return {};
 }
 
-"""First run: same config screen, but blank/cancel falls back to the default
-local model so the TUI always starts usable."""
+"""First run: the config screen with a capability intro; blank/cancel still
+falls back to the default local model so the TUI always starts usable."""
 def pick_model -> dict[str, str] {
-    got = model_config("", "");
+    got = model_config("", "", True);
     if got and got.get("model") { return got; }
     return {"model": "ollama_chat/gemma4:e4b", "api_key": "", "http_base": "", "api_base": ""};
 }
@@ -425,7 +441,7 @@ with entry {
     configure_model(model_spec, http_base, api_key, api_base);
     minicoder.TRACE_HOOK = render_event;
 
-    console.print("[dim]  type a task · /help for commands · /quit to exit[/dim]");
+    console.print("[dim]  type a task · /model to switch model · /help for all commands · /quit to exit[/dim]");
     console.print("");
 
     while True {
