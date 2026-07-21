@@ -41,6 +41,7 @@ import subprocess;
 import minicoder;
 import fullstack;
 import mascot;
+import byllm_patch;
 import from jaclang.byllm.lib { Model }
 import from rich.console { Console }
 import from rich.panel { Panel }
@@ -127,7 +128,11 @@ def render_event(rec: dict) {
 
 
 """Bind the chosen model into both engine modules. Three modes:
-http adapter (small-model boxes) > hosted API (litellm spec + key) > local ollama."""
+http adapter (small-model boxes) > hosted API (litellm spec + key) > local ollama.
+A config-supplied api_base (coding plans / gateways) reaches litellm via the
+byllm_patch applied at startup. Hosted models also get a generous max_tokens:
+reasoning models (GLM-5, o-series) spend tokens on a hidden thinking channel
+first and starve the real answer if capped too low — the empty-content failure."""
 def configure_model(spec: str, http_base: str, api_key: str = "", api_base: str = "") {
     # generated agentic apps (and their gate-time servers) inherit the choice;
     # cleared on non-hosted modes so a mid-session switch doesn't linger
@@ -149,10 +154,11 @@ def configure_model(spec: str, http_base: str, api_key: str = "", api_base: str 
         # gateway endpoints (e.g. Z.ai Coding Plan via openai/<model>)
         os.environ["JAC_AI_MODEL"] = spec;
         os.environ["JAC_AI_API_BASE"] = api_base;
-        cfg: dict = {"native_tools": True};
+        cfg: dict[str, any] = {"native_tools": True};
         if api_base { cfg["api_base"] = api_base; }
-        if api_key { m = Model(model_name=spec, api_key=api_key, config=cfg); }
-        else { m = Model(model_name=spec, config=cfg); }
+        cp: dict[str, int] = {"max_tokens": 8000};
+        if api_key { m = Model(model_name=spec, api_key=api_key, config=cfg, call_params=cp); }
+        else { m = Model(model_name=spec, config=cfg, call_params=cp); }
     } elif spec {
         m = Model(
             model_name=spec,
@@ -392,6 +398,8 @@ with entry {
         import litellm;
         litellm.suppress_debug_info = True;
     } except Exception {}
+    # let a config-supplied base URL reach litellm (coding plans / gateways)
+    byllm_patch.patch_byllm_api_base();
     args = sys.argv[1:];
     work_dir = os.path.abspath(args[0]) if args else os.path.abspath("./work");
 

@@ -20,6 +20,7 @@ import os;
 import sys;
 import minicoder;
 import fullstack;
+import byllm_patch;
 import from jaclang.byllm.lib { Model }
 
 with entry {
@@ -29,6 +30,8 @@ with entry {
         import litellm;
         litellm.suppress_debug_info = True;
     } except Exception {}
+    # let a config-supplied base URL reach litellm (coding plans / gateways)
+    byllm_patch.patch_byllm_api_base();
     args = sys.argv[1:];
     task = args[0] if len(args) > 0 else "Build a tiny notes API: create_note(title, body) and list_notes endpoints over a Note node graph.";
     work_dir = args[1] if len(args) > 1 else os.path.abspath("./out");
@@ -50,13 +53,16 @@ with entry {
         fullstack.llm = m;
     } elif os.environ.get("JACMINI_API_KEY", "") and spec {
         # hosted provider — litellm resolves the provider from the spec prefix;
-        # JACMINI_API_BASE overrides the endpoint (coding plans / gateways)
-        cfgh: dict = {"native_tools": True};
-        if os.environ.get("JACMINI_API_BASE", "") {
-            cfgh["api_base"] = os.environ.get("JACMINI_API_BASE", "");
-        }
-        mh = Model(model_name=spec, api_key=os.environ.get("JACMINI_API_KEY", ""),
-                   config=cfgh);
+        # JACMINI_API_BASE overrides the endpoint (coding plans / gateways). The
+        # byllm_patch applied at startup lets config.api_base reach litellm.
+        hkey = os.environ.get("JACMINI_API_KEY", "");
+        hbase = os.environ.get("JACMINI_API_BASE", "");
+        cfgh: dict[str, any] = {"native_tools": True};
+        if hbase { cfgh["api_base"] = hbase; }
+        # generous headroom for reasoning models (GLM-5 etc.) that spend tokens
+        # on a hidden thinking channel before the real answer
+        mh = Model(model_name=spec, api_key=hkey, config=cfgh,
+                   call_params={"max_tokens": 8000});
         minicoder.llm = mh;
         fullstack.llm = mh;
     } elif spec {
