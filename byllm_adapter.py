@@ -40,8 +40,25 @@ class H(http.server.BaseHTTPRequestHandler):
                 return "\n".join(x.get("text", "") for x in c
                                   if isinstance(x, dict) and x.get("type") == "text")
             return c or ""
-        msgs = [{"role": m.get("role", "user"), "content": flat(m.get("content"))}
-                for m in p.get("messages", [])]
+
+        def imgs(c):
+            out = []
+            if isinstance(c, list):
+                for x in c:
+                    if isinstance(x, dict) and x.get("type") == "image_url":
+                        u = x.get("image_url")
+                        u = u.get("url") if isinstance(u, dict) else u
+                        if isinstance(u, str) and u.startswith("data:") and "," in u:
+                            out.append(u.split(",", 1)[1])
+            return out
+
+        msgs = []
+        for m in p.get("messages", []):
+            entry = {"role": m.get("role", "user"), "content": flat(m.get("content"))}
+            pics = imgs(m.get("content"))
+            if pics:
+                entry["images"] = pics
+            msgs.append(entry)
         body = {"model": model, "messages": msgs, "stream": False, "think": False,
                 "options": {"temperature": p.get("temperature", 0.2)}}
         if p.get("max_tokens"):

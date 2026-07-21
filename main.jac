@@ -19,6 +19,7 @@ Commands inside the TUI:
 import os;
 import sys;
 import jacsmith;
+import fullstack;
 import from typing { Callable }
 import from jaclang.byllm.lib { Model }
 import from rich.console { Console }
@@ -84,6 +85,9 @@ def run_task(task: str, work_dir: str) {
         proj = kind.split(":", 1)[1] if ":" in kind else work_dir;
         console.print(f"[bold]route[/bold] → add_endpoint [dim]@ {proj}[/dim]");
         res = jacsmith.smith_add(task, proj);
+    } elif fullstack.wants_frontend(task) {
+        console.print("[bold]route[/bold] → build_fullstack [dim](backend + UI + browser gates)[/dim]");
+        res = fullstack.smith_full(task, work_dir);
     } else {
         console.print("[bold]route[/bold] → build_backend");
         res = jacsmith.smith(task, work_dir);

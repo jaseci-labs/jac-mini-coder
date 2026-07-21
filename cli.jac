@@ -12,6 +12,7 @@ Model selection (local by default):
 import os;
 import sys;
 import jacsmith;
+import fullstack;
 import from jaclang.byllm.lib { Model }
 
 with entry {
@@ -66,6 +67,9 @@ with entry {
         proj = kind.split(":", 1)[1] if ":" in kind else work_dir;
         print("route: add_endpoint @ " + proj);
         res = jacsmith.smith_add(task, proj, dry);
+    } elif fullstack.wants_frontend(task) {
+        print("route: build_fullstack");
+        res = fullstack.smith_full(task, work_dir, dry);
     } else {
         print("route: build_backend");
         res = jacsmith.smith(task, work_dir, dry);

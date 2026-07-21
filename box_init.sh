@@ -76,6 +76,14 @@ UNIT
 sudo systemctl daemon-reload && sudo systemctl enable --now jacadapter && systemctl is-active jacadapter
 else echo "no adapter file — skipping"; fi'
 
+step "5c · headless Chrome for the browser gates (fullstack builds)"
+"${SSH[@]}" 'if command -v google-chrome >/dev/null 2>&1; then echo "chrome present"
+else cd /tmp && wget -q https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb \
+     && sudo apt-get install -y ./google-chrome-stable_current_amd64.deb >/dev/null 2>&1 && echo "chrome installed"; fi
+mkdir -p ~/bin
+printf "#!/bin/sh\nexec /usr/bin/google-chrome --no-sandbox --disable-gpu --disable-dev-shm-usage \"\$@\"\n" > ~/bin/chrome-wrap
+chmod +x ~/bin/chrome-wrap && echo "JACBROWSER_CHROME wrapper ready (export JACBROWSER_CHROME=\$HOME/bin/chrome-wrap)"'
+
 step "6 · smoke test — typed byLLM probe on gemma4:e4b"
 "${SSH[@]}" 'cat > ~/jacsmith/_probe.jac <<'"'"'EOF'"'"'
 """Smoke: typed slots incl. a "name" field (the gemma-sniff trap) + nesting."""

@@ -19,9 +19,16 @@ import subprocess;
 import json;
 import time;
 import from typing { Callable }
-import from jaclang.byllm.lib { Model }
+import from jaclang.byllm.lib { Model, Image }
 
 glob JAC: str = os.path.expanduser("~/.local/bin/jac");
+
+# Backend file targets. The service layout uses main.sv.jac; the fullstack
+# (web-app) layout keeps walkers in endpoints.sv.jac with main.jac as the
+# mixed entry. build_fullstack swaps these for a run and restores them after.
+glob DECL_FILE: str = "main.sv.jac";
+glob IMPL_FILE: str = "main.sv.impl.jac";
+glob ENTRY_FILE: str = "main.sv.jac";
 # Local by default: your ollama model writes the Jac. native_tools/think are the
 # two settings gemma-family models require (see README).
 glob llm: Model = Model(
@@ -483,18 +490,18 @@ def _curl_json(url: str, payload: str, token: str = "") -> str {
 """RUNTIME gate (owner=code): serve the backend and exercise EVERY planned endpoint
 with its example payload. A 2xx `ok:true` per endpoint is the red-check — the build
 oracle cannot see runtime faults; this can."""
-def gate_serve(project_dir: str, endpoints: list[EndpointSpec], dry: bool) -> CheckResult {
+def gate_serve(project_dir: str, endpoints: list[EndpointSpec], dry: bool, wait_s: int = 30) -> CheckResult {
     if dry { return CheckResult(ok=True, errors=""); }
     base = "http://localhost:" + str(SERVE_PORT);
-    subprocess.run(["pkill", "-f", "jac start main.sv.jac --port " + str(SERVE_PORT)], capture_output=True);
+    subprocess.run(["pkill", "-f", "jac start .* --port " + str(SERVE_PORT)], capture_output=True);
     srv = subprocess.Popen(
-        [JAC, "start", "main.sv.jac", "--port", str(SERVE_PORT)],
+        [JAC, "start", ENTRY_FILE, "--port", str(SERVE_PORT)],
         cwd=project_dir, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
     );
     try {
         # poll until the auth surface answers (register 400 on empty body still proves liveness)
         up = False;
-        for _ in range(30) {
+        for _ in range(wait_s) {
             time.sleep(1);
             probe = _curl_json(base + "/user/register", "{}");
             if probe { up = True; break; }
@@ -753,15 +760,15 @@ def force_stub_file(sk: Skeleton, plan: BuildPlan) {
     # the contract is TWO files — drop any hallucinated extras before they can
     # fail a gate (models occasionally invent main.impl.jac / helper files).
     # If the decl file came back under a wrong name, claim it rather than drop it.
-    if not [d for d in sk.decls if d.path == "main.sv.jac"] {
+    if not [d for d in sk.decls if d.path == DECL_FILE] {
         for d in sk.decls {
             if ".impl." not in d.path and ("walker" in d.source or "node " in d.source) {
-                d.path = "main.sv.jac";
+                d.path = DECL_FILE;
                 break;
             }
         }
     }
-    sk.decls = [d for d in sk.decls if d.path == "main.sv.jac"];
+    sk.decls = [d for d in sk.decls if d.path == DECL_FILE];
     # a walker referencing an undeclared node type is a one-decl omission —
     # synthesize the node from the union of endpoint payload fields
     for d in sk.decls {
@@ -786,11 +793,11 @@ def force_stub_file(sk: Skeleton, plan: BuildPlan) {
         }
     }
     stub_src = synth_stub_impls(sk);
-    sk.decls = [d for d in sk.decls if d.path != "main.sv.impl.jac"];
-    sk.decls.append(DeclFile(path="main.sv.impl.jac", role=FileRole.IMPL, source=stub_src));
+    sk.decls = [d for d in sk.decls if d.path != IMPL_FILE];
+    sk.decls.append(DeclFile(path=IMPL_FILE, role=FileRole.IMPL, source=stub_src));
     sigs = "\n".join([ln.split(" {")[0] + ";" for ln in stub_src.split("\n\n") if ln.strip()]);
     sk.impl_targets = [Stub(
-        file="main.sv.impl.jac",
+        file=IMPL_FILE,
         signatures=sigs,
         intent="Implement the real logic for every signature: " + plan.summary
     )];
@@ -1253,7 +1260,7 @@ def load_project(project_dir: str) -> tuple {
         ];
     } except Exception {}
     sk = Skeleton();
-    for rel in ["main.sv.jac", "main.sv.impl.jac"] {
+    for rel in [DECL_FILE, IMPL_FILE] {
         p = os.path.join(project_dir, rel);
         if os.path.exists(p) {
             role = FileRole.IMPL if ".impl." in rel else FileRole.DECL;
@@ -1347,7 +1354,7 @@ walker add_endpoint {
         }
         new_sigs = append_new_stubs(self.skeleton);
         self.skeleton.impl_targets = [Stub(
-            file="main.sv.impl.jac", signatures=new_sigs,
+            file=IMPL_FILE, signatures=new_sigs,
             intent="Implement the NEW endpoint: " + self.task
         )];
         write_all(self.project_dir, self.skeleton, self.dry_run);
@@ -1537,7 +1544,7 @@ walker fix_bug {
             }
         }
         self.skeleton.impl_targets = [Stub(
-            file="main.sv.impl.jac", signatures="\n".join(sigs),
+            file=IMPL_FILE, signatures="\n".join(sigs),
             intent="FIX THIS BUG (change only what the bug requires): " + self.task
         )];
         s1 = here ++> VerifySt();
@@ -1625,11 +1632,11 @@ project means a mutation graph, discriminated by the task's own vocabulary.
 A GEN-ENUM route slot enters only when the graph library outgrows this."""
 def route(work_dir: str, task: str = "") -> str {
     proj = "";
-    if os.path.exists(os.path.join(work_dir, "main.sv.jac")) {
+    if os.path.exists(os.path.join(work_dir, DECL_FILE)) {
         proj = work_dir;
     } else {
         for child in (os.listdir(work_dir) if os.path.isdir(work_dir) else []) {
-            if os.path.exists(os.path.join(work_dir, child, "main.sv.jac")) {
+            if os.path.exists(os.path.join(work_dir, child, DECL_FILE)) {
                 proj = os.path.join(work_dir, child);
                 break;
             }
