@@ -24,7 +24,9 @@ Commands inside the TUI:
     /http <base>         byllm http_client mode via the adapter (small-model boxes)
     /update              upgrade to the latest release (git pull in a clone;
                          otherwise re-runs the latest release installer)
-    /dir <path>          switch workspace
+    /dir <path>          switch workspace (~ works, created if missing);
+                         /dir alone shows where you are and what is there.
+                         /cd, /ws, /workspace do the same
     /quit                exit
     anything else        a task — build, add an endpoint, or fix a bug; the router decides
 
@@ -120,6 +122,38 @@ def persist_model_first(on: bool) {
 }
 
 
+"""Turn whatever the user typed into a real absolute path.
+
+`~` is the common case and os.path.abspath does NOT expand it — `/dir ~/work`
+used to create a directory literally named "~". Relative paths resolve against
+the directory the user launched from, not wherever the engine happens to live."""
+def resolve_dir(arg: str) -> str {
+    p: str = os.path.expanduser(os.path.expandvars(arg.strip().strip('"').strip("'")));
+    if not os.path.isabs(p) {
+        base: str = str(os.environ.get("JACMINI_CWD", os.getcwd()));
+        p = os.path.join(base, p);
+    }
+    return os.path.abspath(p);
+}
+
+"""Project directories inside a workspace (anything a build has written)."""
+def list_projects(work_dir: str) -> list[str] {
+    out: list[str] = [];
+    try {
+        for nm in sorted(os.listdir(work_dir)) {
+            d = os.path.join(work_dir, nm);
+            if os.path.isdir(d) and (os.path.exists(os.path.join(d, "plan.json"))
+                or os.path.exists(os.path.join(d, "main.jac"))
+                or os.path.exists(os.path.join(d, "main.sv.jac"))) { out.append(nm); }
+        }
+    } except Exception {}
+    return out;
+}
+
+def short_path(p: str) -> str {
+    return p.replace(os.path.expanduser("~"), "~");
+}
+
 """Shorten a path/spec to fit a column, keeping the tail — the end of a path or
 a model spec is the part that identifies it."""
 def _fit(s: str, w: int) -> str {
@@ -174,11 +208,15 @@ def render_event(rec: dict) {
     } elif kind == "gate" {
         gate = str(rec.get("gate", ""));
         glabel = GATE_LABEL.get(gate, gate);
+        # a failed gate is now retried, so say which attempt this is — otherwise
+        # the same red line repeats and the build looks stuck rather than working
+        rnd = int(rec.get("round", 0));
+        suffix = f" [dim](retry {rnd})[/dim]" if rnd > 0 else "";
         if rec.get("gate_ok", False) {
-            console.print(f"  [dim]│[/dim] [green]✓[/green] [dim]{glabel}[/dim]");
+            console.print(f"  [dim]│[/dim] [green]✓[/green] [dim]{glabel}[/dim]{suffix}");
         } else {
             err = _first_err(str(rec.get("gate_errors", "")));
-            console.print(f"  [dim]│[/dim] [red]✗ {glabel}[/red] [dim]{err}[/dim]");
+            console.print(f"  [dim]│[/dim] [red]✗ {glabel}[/red]{suffix} [dim]{err}[/dim]");
         }
     } elif kind == "run" {
         console.print("  [dim]│[/dim] [green]✓ done[/green]");
@@ -630,8 +668,11 @@ with entry {
     } except Exception {}
     # let a config-supplied base URL reach litellm (coding plans / gateways)
     byllm_patch.patch_byllm_api_base();
-    args = sys.argv[1:];
-    work_dir = os.path.abspath(args[0]) if args else os.path.abspath("./work");
+    args = [a for a in sys.argv[1:] if a != "--"];
+    # one resolver for every entry point, so `~`, a relative path, or a stray
+    # `--` behave the same whether they came from the launcher or from /dir
+    work_dir = resolve_dir(args[0]) if args else resolve_dir("./jac-mini-work");
+    try { os.makedirs(work_dir, exist_ok=True); } except Exception {}
 
     # env > saved config > first-run picker
     conf = load_conf();
@@ -842,9 +883,25 @@ with entry {
             }
             continue;
         }
-        if line.startswith("/dir ") {
-            work_dir = os.path.abspath(line.split(" ", 1)[1].strip());
-            console.print(f"[dim]workspace → {work_dir}[/dim]");
+        if line.split(" ")[0] in ["/dir", "/cd", "/ws", "/workspace"] {
+            arg = line.split(" ", 1)[1].strip() if " " in line else "";
+            if not arg {
+                # bare /dir: say where we are and what is here, instead of
+                # falling through and being built as if it were a feature request
+                console.print(f"[dim]workspace:[/dim] {short_path(work_dir)}");
+                for nm in list_projects(work_dir) { console.print(f"  [dim]· {nm}[/dim]"); }
+                console.print("[dim]switch with:[/dim] /dir <path>   [dim](~ works, created if missing)[/dim]");
+                continue;
+            }
+            work_dir = resolve_dir(arg);
+            try { os.makedirs(work_dir, exist_ok=True); }
+            except Exception as e {
+                console.print(f"[red]can't use that directory[/red] [dim]— {str(e)[:80]}[/dim]");
+                continue;
+            }
+            projs = list_projects(work_dir);
+            note = f" [dim]({len(projs)} project(s) here)[/dim]" if projs else " [dim](empty)[/dim]";
+            console.print(f"[dim]workspace →[/dim] {short_path(work_dir)}{note}");
             continue;
         }
         console.print("");

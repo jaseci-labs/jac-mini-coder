@@ -182,8 +182,23 @@ mkdir -p "$BIN"
 cat > "$BIN/jac-mini-coder" <<LAUNCH
 #!/bin/sh
 # jac-mini-coder launcher — workspace defaults to ./jac-mini-work under your CWD
+#
+# Two things this has to get right, because it cd's into the install dir before
+# running: a bare "--" separator must not become the workspace name, and a
+# relative path must resolve against YOUR shell's directory, not the engine's.
+# Both were wrong, so \`jac-mini-coder -- ~/work\` landed in ~/.jac-mini-coder/--
+# and the advertised \`jac-mini-coder ./myproject\` landed inside the install dir.
+[ "\$1" = "--" ] && shift
 WS="\${1:-\$PWD/jac-mini-work}"
+case "\$WS" in
+  "~") WS="\$HOME" ;;
+  "~/"*) WS="\$HOME/\${WS#"~/"}" ;;
+  /*) ;;
+  *) WS="\$PWD/\$WS" ;;
+esac
 export PATH="\$HOME/.local/bin:\$PATH"
+export JACMINI_CWD="\$PWD"
+mkdir -p "\$WS" 2>/dev/null
 cd "$DIR" && exec jac run main.jac -- "\$WS"
 LAUNCH
 chmod +x "$BIN/jac-mini-coder"

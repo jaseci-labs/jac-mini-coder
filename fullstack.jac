@@ -1335,6 +1335,37 @@ walker build_fullstack {
         }
         minicoder._trace({"station": "verify", "kind": "gate", "gate": "runtime", "round": 0,
                          "gate_ok": res.ok, "gate_errors": res.errors[:2000]});
+        # A runtime failure is a LOGIC failure — the file compiles, it just does
+        # the wrong thing (a `priv` endpoint whose owner cannot read back their
+        # own row). That is exactly what the repair loop is for, and the
+        # implement station has always had one. Verify used to give up on the
+        # first failure and tell the user to fetch a bigger model, which threw
+        # away a whole build over a fixable body. "Try a stronger model" is the
+        # last resort, not the first response.
+        n = 0;
+        while (not res.ok) and (n < self.budget) {
+            self.log.append("runtime-repair-" + str(n + 1));
+            for st in self.skeleton.impl_targets {
+                self.blocks = minicoder.fill_impl_blocks(self.skeleton, st, res.errors, self.blocks,
+                                                        "verify", n + 1, self.project_dir, self.dry_run);
+                body = minicoder.assemble_impl(st, self.blocks);
+                minicoder.update_impl_source(self.skeleton, st.file, body);
+                if not self.dry_run { minicoder._write(self.project_dir, st.file, body); }
+            }
+            # the repair must still COMPILE before it is worth serving; if it
+            # broke the build, that error is the feedback for the next round
+            bres = minicoder.impl_gates(self.project_dir, self.skeleton, self.dry_run);
+            if not bres.ok {
+                res = bres;
+            } elif self.auth_mode {
+                res = gate_mu(self.project_dir, self.plan, self.access, self.dry_run, 240);
+            } else {
+                res = minicoder.gate_serve(self.project_dir, self.plan.endpoints, self.dry_run, 240);
+            }
+            minicoder._trace({"station": "verify", "kind": "gate", "gate": "runtime", "round": n + 1,
+                             "gate_ok": res.ok, "gate_errors": res.errors[:2000]});
+            n += 1;
+        }
         if not res.ok {
             self.outcome.append(minicoder.BuildResult(ok=False, stage="runtime", message=res.errors, files=self.log));
             disengage;
@@ -1350,6 +1381,36 @@ walker build_fullstack {
                 ui = gate_ui(self.project_dir, self.plan, shot, self.dry_run, self.auth_mode, self.ai_mode);
                 minicoder._trace({"station": "verify", "kind": "gate", "gate": "ui", "round": 0,
                                  "gate_ok": ui.ok, "gate_errors": ui.errors[:2000]});
+                # same rule as the runtime gate: repair before surrendering. The
+                # UI gate's own cross-check says whether the write reached the
+                # server, which is precisely the feedback a body repair needs.
+                un = 0;
+                while (not ui.ok) and (un < self.budget) {
+                    self.log.append("ui-repair-" + str(un + 1));
+                    for st in self.skeleton.impl_targets {
+                        self.blocks = minicoder.fill_impl_blocks(self.skeleton, st, ui.errors, self.blocks,
+                                                                "verify", un + 1, self.project_dir, self.dry_run);
+                        body = minicoder.assemble_impl(st, self.blocks);
+                        minicoder.update_impl_source(self.skeleton, st.file, body);
+                        if not self.dry_run { minicoder._write(self.project_dir, st.file, body); }
+                    }
+                    bres2 = minicoder.impl_gates(self.project_dir, self.skeleton, self.dry_run);
+                    if not bres2.ok {
+                        ui = bres2;
+                    } else {
+                        # the client bundle is built at server start, so the
+                        # repaired server must be restarted before re-driving it
+                        srv.terminate();
+                        time.sleep(1);
+                        srv = subprocess.Popen([JAC, "start", "main.jac", "--port", str(minicoder.SERVE_PORT)],
+                                               cwd=self.project_dir, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL);
+                        _wait_server(minicoder.SERVE_PORT);
+                        ui = gate_ui(self.project_dir, self.plan, shot, self.dry_run, self.auth_mode, self.ai_mode);
+                    }
+                    minicoder._trace({"station": "verify", "kind": "gate", "gate": "ui", "round": un + 1,
+                                     "gate_ok": ui.ok, "gate_errors": ui.errors[:2000]});
+                    un += 1;
+                }
                 if not ui.ok {
                     self.outcome.append(minicoder.BuildResult(ok=False, stage="ui", message=ui.errors, files=self.log));
                     disengage;
