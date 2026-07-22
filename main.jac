@@ -504,7 +504,17 @@ def handle_message(line: str, work_dir: str) {
     }
     agent_head();
     console.print(intent.blurb if intent.blurb else "Working on it.", markup=False, highlight=False);
-    task = intent.task if intent.task else line;
+    # Build from the USER'S OWN WORDS, with the rephrasing only as extra context.
+    # Every downstream classifier is vocabulary-driven (wants_public / wants_auth /
+    # wants_ai / plan_fidelity), and the model's rephrasing silently dropped signal
+    # words: "posts to the PUBLIC timeline" came back without "public", so the
+    # write endpoint was classified private while the reader stayed shared — the
+    # app wrote to the user's own root and read the commons, and nothing ever
+    # appeared. Never let a paraphrase decide access control.
+    task = line;
+    if intent.task and (intent.task.lower() not in line.lower()) {
+        task = line + "\n\n(interpretation: " + intent.task + ")";
+    }
     res = run_task(task, work_dir);
     outcome = ("succeeded: " + res.message) if res.ok
         else ("FAILED at " + res.stage + " — " + res.message.split("\n")[0][:200]);
