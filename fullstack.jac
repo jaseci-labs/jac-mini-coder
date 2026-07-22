@@ -874,70 +874,148 @@ def _browse(args: list[str], cwd: str) -> str {
     return (r.stdout or "") + (r.stderr or "");
 }
 
-"""Drive the real rendered app: open, FILL the form with the plan's example
-payload via the template's stable ids, CLICK submit, assert the written value
-appears in the page, then screenshot the populated page for the vision judge."""
+"""Drive the real app in a browser and report a verdict you can trust.
+
+This gate used to be the least reliable part of the harness: it fired blind
+(never checking whether a fill or click landed), it asserted on the plan's own
+example value — which the two-user REST gate had usually already posted, so it
+could pass without the UI working — and on failure it emitted one line with no
+evidence, so every diagnosis meant reproducing the whole thing by hand.
+
+Now: every step is verified, the probe is UNIQUE to this run, and when the value
+does not render the gate asks the SERVER whether the row exists. That single
+cross-check separates the two failures it used to conflate — a write that never
+happened, versus a page that did not refresh — and it captures a screenshot plus
+the page text so a failure is diagnosable from the trace alone."""
+def _ui_evidence(project_dir: str, tag: str) -> str {
+    shot = os.path.join(project_dir, "ui_fail_" + tag + ".png");
+    try { _browse(["screenshot", shot], project_dir); } except Exception {}
+    txt = "";
+    try { txt = _browse(["snapshot"], project_dir); } except Exception {}
+    vis = " | ".join([l.strip() for l in txt.split("\n") if "StaticText" in l][:8]);
+    return " [evidence: " + shot + " | on-page: " + vis[:220] + "]";
+}
+
 def gate_ui(project_dir: str, plan: minicoder.BuildPlan, shot_path: str, dry: bool, auth: bool = False, ai: bool = False) -> minicoder.CheckResult {
     if dry { return minicoder.CheckResult(ok=True, errors=""); }
     base = "http://localhost:" + str(minicoder.SERVE_PORT);
-    # only the inputs the user can actually type — under auth the identity field
-    # is session-supplied and has no form input to fill (or to assert on)
     fields = form_fields(plan, auth);
     wname = write_walker_name(plan);
+    lname = list_walker_name(plan);
     example: dict = {};
     for e in plan.endpoints {
         if e.name == wname {
             try { example = json.loads(e.example_json); } except Exception {}
         }
     }
+    # A marker unique to THIS invocation. A per-port constant is not enough: the
+    # gate runs twice (once, then after restyle) against the same database, so a
+    # previous run's probe lingers and the server cross-check would report "the
+    # post WAS saved" when nothing was written this time.
+    probe = "uiprobe" + str(int(time.time())) + "zq";
+    email = "uiuser@example.com";
+    pw = "uipw12345";
+    already = False;
     try {
         _browse(["open", base], project_dir);
         if auth {
+            # The browser session can survive a previous run (restyle re-check,
+            # a manual drive), in which case the app opens ALREADY signed in and
+            # there is no login card to fill. Treat that as authenticated rather
+            # than declaring the page broken.
             wa = _browse(["wait", "#a-email"], project_dir);
-            if ("error" in wa.lower()) and ("time" in wa.lower()) {
+            if "waited for" not in wa.lower() {
+                w0 = _browse(["wait", "#f-submit"], project_dir);
+                if "waited for" in w0.lower() {
+                    already = True;
+                } else {
+                    ev = _ui_evidence(project_dir, "authcard");
+                    _browse(["close"], project_dir);
+                    return minicoder.CheckResult(ok=False,
+                        errors="UI: neither the login form nor the post form rendered — page blank or crashed. "
+                            + wa[:140] + ev);
+                }
+            }
+            if not already {
+                _browse(["fill", "#a-email", email], project_dir);
+                _browse(["fill", "#a-password", pw], project_dir);
+                _browse(["click", "#a-signup"], project_dir);
+            }
+            # WAIT for the session to actually establish, and say so if it never does
+            authed = already;
+            t = 0;
+            while t < 20 {
+                time.sleep(2);
+                sn = _browse(["snapshot"], project_dir);
+                if ("Log out" in sn) or ("Password" not in sn) {
+                    authed = True; break;
+                }
+                if ("Signup failed" in sn) or ("email may be in use" in sn) or ("Invalid credentials" in sn) {
+                    break;
+                }
+                t += 1;
+            }
+            if not authed {
+                ev = _ui_evidence(project_dir, "auth");
                 _browse(["close"], project_dir);
                 return minicoder.CheckResult(ok=False,
-                    errors="UI: auth card never appeared: " + wa[:300]);
+                    errors="UI: signup/login never established a session, so nothing else could work." + ev);
             }
-            _browse(["fill", "#a-email", "uiuser@example.com"], project_dir);
-            _browse(["fill", "#a-password", "uipw12345"], project_dir);
-            _browse(["click", "#a-signup"], project_dir);
-            time.sleep(2);
         }
         w = _browse(["wait", "#f-submit"], project_dir);
-        if ("error" in w.lower()) and ("time" in w.lower()) {
+        if "waited for" not in w.lower() {
+            ev = _ui_evidence(project_dir, "form");
             _browse(["close"], project_dir);
             return minicoder.CheckResult(ok=False,
-                errors="UI: the form never became actionable — page blank or crashed: " + w[:300]);
+                errors="UI: the post form never rendered — page blank or crashed. " + w[:160] + ev);
         }
+        # fill: the FIRST field carries the unique probe, the rest their examples
+        first = True;
         for f in fields {
-            val = str(example.get(f, "example"));
+            val = probe if first else str(example.get(f, "example"));
+            first = False;
             _browse(["fill", "#f-" + f, val], project_dir);
         }
         _browse(["click", "#f-submit"], project_dir);
-        # POLL for the written value instead of a fixed sleep: the submit does a
-        # real walker spawn + re-render, which takes seconds on a modest box. A
-        # 1.5s sleep raced the round-trip and failed apps that genuinely work
-        # (verified by hand: the item rendered at ~8s). Fast setups still exit
-        # on the first hit.
-        probe0 = str(example.get(fields[0], "")) if fields else "";
         snap = "";
         tries0 = 0;
+        rendered = False;
         while tries0 < 20 {
             time.sleep(2);
             snap = _browse(["snapshot"], project_dir);
-            if (not probe0) or (probe0 in snap) { break; }
+            if probe in snap { rendered = True; break; }
             tries0 += 1;
+        }
+        if not rendered {
+            # THE cross-check: is the row on the server? This separates "the write
+            # never happened" from "the write worked, the page just didn't refresh"
+            on_server = False;
+            try {
+                minicoder._curl_json(base + "/user/register",
+                    '{"identities":[{"type":"username","value":"' + email + '"}],"credential":{"type":"password","password":"' + pw + '"}}');
+                lg = minicoder._curl_json(base + "/user/login",
+                    '{"identity":{"type":"username","value":"' + email + '"},"credential":{"type":"password","password":"' + pw + '"}}');
+                tok = "";
+                try { tok = json.loads(lg)["data"]["token"]; } except Exception {}
+                if tok and lname {
+                    rb = minicoder._curl_json(base + "/walker/" + lname, "{}", tok);
+                    on_server = probe in rb;
+                }
+            } except Exception {}
+            ev = _ui_evidence(project_dir, "render");
+            _browse(["close"], project_dir);
+            if on_server {
+                return minicoder.CheckResult(ok=False,
+                    errors="UI: the post WAS saved (the server returns it) but the page never showed it "
+                        + "— the client list does not refresh after a write." + ev);
+            }
+            return minicoder.CheckResult(ok=False,
+                errors="UI: filled and clicked the form but nothing was written — the submit handler "
+                    + "or the write endpoint failed." + ev);
         }
         if ai {
             _browse(["fill", "#ai-question", "Summarize what I have so far."], project_dir);
             _browse(["click", "#ai-ask"], project_dir);
-            # a real answer renders with the template's "AI: " prefix — poll
-            # for that marker; the Thinking… placeholder and the no-reports
-            # fallback both fail the gate. The window is generous: a reasoning
-            # model (GLM-5, o-series) spends a hidden thinking pass before the
-            # answer, so a single grounded ai_answer can take a minute-plus —
-            # a fast local model still breaks early on the first hit.
             answered = False;
             tries = 0;
             while tries < 60 {
@@ -948,43 +1026,18 @@ def gate_ui(project_dir: str, plan: minicoder.BuildPlan, shot_path: str, dry: bo
                 tries += 1;
             }
             if not answered {
+                ev = _ui_evidence(project_dir, "ai");
                 _browse(["close"], project_dir);
                 return minicoder.CheckResult(ok=False,
-                    errors="UI: asked the AI but no real answer rendered within 240s.");
+                    errors="UI: asked the AI but no answer rendered within 240s." + ev);
             }
         }
         _browse(["screenshot", shot_path], project_dir);
         _browse(["close"], project_dir);
-        probe = str(example.get(fields[0], "")) if fields else "";
-        if probe and (probe not in snap) {
-            return minicoder.CheckResult(ok=False,
-                errors="UI: filled and clicked the form but '" + probe
-                    + "' never appeared in the page — the UI write/read loop is broken.");
-        }
         return minicoder.CheckResult(ok=True, errors="");
     } except Exception as ex {
         try { _browse(["close"], project_dir); } except Exception {}
         return minicoder.CheckResult(ok=False, errors="UI: browser exercise failed: " + str(ex)[:300]);
-    }
-}
-
-
-"""Re-render the frontend trio from the CURRENT decl before every decl gate:
-the project-wide `jac check` includes the frontend, and a frontend importing a
-node the model didn't name that round fails the check no matter how good the
-decl is (the e2b round-coupling failure)."""
-def sync_frontend(project_dir: str, plan: minicoder.BuildPlan, sk: minicoder.Skeleton,
-                  copy: UiCopy, auth: bool, ai: bool, dry: bool, theme: ThemeTokens = ThemeTokens()) {
-    if dry { return; }
-    decl_src = "";
-    for d in sk.decls {
-        if ".impl." not in d.path { decl_src = d.source; }
-    }
-    nt_real = minicoder._first_node_type(decl_src);
-    if nt_real != "Root" {
-        minicoder._write(project_dir, "main.jac", render_shadcn_main(plan, copy, nt_real));
-        minicoder._write(project_dir, "frontend.cl.jac", render_shadcn_page(plan, copy, auth, nt_real, ai));
-        minicoder._write(project_dir, "frontend.impl.jac", render_frontend_impl(plan, auth, nt_real, ai));
     }
 }
 
