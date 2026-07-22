@@ -37,6 +37,48 @@ glob STYLE_JUDGMENT: str =
 
 glob ACCENTS: list[str] = ["#4f46e5", "#0e7490", "#b45309", "#be185d", "#15803d"];
 
+obj ThemeTokens {
+    has bg: str = "#f7f7f5";
+    has card: str = "#ffffff";
+    has ink: str = "#23262e";
+    has muted: str = "#6b7078";
+    has line: str = "#e4e3df";
+    has accent: str = "#4f46e5";
+    has accent_ink: str = "#ffffff";
+    has radius: str = "10px";
+}
+sem ThemeTokens = "A small design-token palette for the page. Every colour is a #rrggbb hex string.";
+sem ThemeTokens.bg = "Page background.";
+sem ThemeTokens.card = "Card/surface background, sitting on top of bg.";
+sem ThemeTokens.ink = "Primary text colour — must have strong contrast against card.";
+sem ThemeTokens.muted = "Secondary text colour — readable but quieter than ink.";
+sem ThemeTokens.line = "Hairline border colour, subtle against card.";
+sem ThemeTokens.accent = "The single accent colour, used on the primary button.";
+sem ThemeTokens.accent_ink = "Text colour ON the accent button — usually #ffffff or #000000, whichever contrasts.";
+sem ThemeTokens.radius = "Corner radius with unit, e.g. '10px' or '9999px' for pill shapes.";
+
+def pick_theme(brief: str, guide: str) -> ThemeTokens by llm(temperature=0.2);
+sem pick_theme = "Choose the design tokens for this app. If the request references a well-known product or brand, match that product's actual look — its background, text and signature accent colour — so the result is visually recognisable. Otherwise choose a calm palette that suits the subject. Contrast must stay legible: ink on card, accent_ink on accent.";
+sem pick_theme.brief = "What the app is, and any visual direction the user asked for.";
+sem pick_theme.guide = "The design standards to respect.";
+
+glob HEXRE: str = "^#[0-9a-fA-F]{6}$";
+
+"""Model-picked palettes are validated mechanically: a bad hex silently breaks
+the whole stylesheet, so anything malformed falls back to the default token."""
+def sanitize_theme(t: ThemeTokens) -> ThemeTokens {
+    d = ThemeTokens();
+    if re.match(HEXRE, str(t.bg)) is None { t.bg = d.bg; }
+    if re.match(HEXRE, str(t.card)) is None { t.card = d.card; }
+    if re.match(HEXRE, str(t.ink)) is None { t.ink = d.ink; }
+    if re.match(HEXRE, str(t.muted)) is None { t.muted = d.muted; }
+    if re.match(HEXRE, str(t.line)) is None { t.line = d.line; }
+    if re.match(HEXRE, str(t.accent)) is None { t.accent = d.accent; }
+    if re.match(HEXRE, str(t.accent_ink)) is None { t.accent_ink = d.accent_ink; }
+    if re.match(r"^[0-9]+(px|rem|em)$", str(t.radius)) is None { t.radius = d.radius; }
+    return t;
+}
+
 def accent_for(name: str) -> str {
     h = 0;
     for c in name { h = (h * 31 + ord(c)) % 997; }
@@ -131,10 +173,11 @@ def list_walker_name(plan: minicoder.BuildPlan) -> str {
 glob NL: str = chr(10);
 glob DQ: str = chr(34);
 
-def render_style_css(accent: str) -> str {
+def render_style_css(t: ThemeTokens) -> str {
     lines = [
-        ":root { --accent: " + accent + "; --bg: #f7f7f5; --card: #ffffff; --ink: #23262e;",
-        "        --muted: #6b7078; --line: #e4e3df; --radius: 10px; }",
+        ":root { --accent: " + t.accent + "; --accent-ink: " + t.accent_ink + "; --bg: " + t.bg
+            + "; --card: " + t.card + "; --ink: " + t.ink + ";",
+        "        --muted: " + t.muted + "; --line: " + t.line + "; --radius: " + t.radius + "; }",
         "* { box-sizing: border-box; }",
         "body { margin: 0; background: var(--bg); color: var(--ink);",
         "       font: 16px/1.5 system-ui, -apple-system, sans-serif; }",
@@ -145,7 +188,7 @@ def render_style_css(accent: str) -> str {
         ".entry-form input { flex: 1 1 140px; padding: 10px 12px; font-size: 15px;",
         "  border: 1px solid var(--line); border-radius: var(--radius); background: var(--card); }",
         ".entry-form input:focus { outline: 2px solid var(--accent); outline-offset: 1px; border-color: var(--accent); }",
-        ".entry-form button { padding: 10px 18px; font-size: 15px; font-weight: 600; color: #fff;",
+        ".entry-form button { padding: 10px 18px; font-size: 15px; font-weight: 600; color: var(--accent-ink);",
         "  background: var(--accent); border: none; border-radius: var(--radius); cursor: pointer; }",
         ".entry-form button:hover { filter: brightness(1.08); }",
         ".card-list { display: flex; flex-direction: column; gap: 10px; }",
@@ -163,7 +206,7 @@ def render_style_css(accent: str) -> str {
         ".auth-row { display: flex; gap: 8px; }",
         ".auth-row button { flex: 1; padding: 10px 14px; font-size: 15px; font-weight: 600;",
         "  border-radius: var(--radius); cursor: pointer; border: 1px solid var(--accent); }",
-        ".auth-row button[type=submit] { background: var(--accent); color: #fff; }",
+        ".auth-row button[type=submit] { background: var(--accent); color: var(--accent-ink); }",
         ".auth-row button[type=button] { background: var(--card); color: var(--accent); }",
         ".auth-msg { color: #b4232a; font-size: 14px; margin: 0; }",
         ".logout { float: right; margin-top: -56px; background: none; border: 1px solid var(--line);",
@@ -174,7 +217,7 @@ def render_style_css(accent: str) -> str {
         ".ask-card input:focus { outline: 2px solid var(--accent); outline-offset: 1px; }",
         ".ask-card button { padding: 10px 18px; font-weight: 600; color: var(--accent); background: var(--card);",
         "  border: 1px solid var(--accent); border-radius: var(--radius); cursor: pointer; }",
-        ".ask-card button:hover { background: var(--accent); color: #fff; }",
+        ".ask-card button:hover { background: var(--accent); color: var(--accent-ink); }",
         ".ai-answer { background: var(--card); border-left: 3px solid var(--accent); border-radius: var(--radius);",
         "  padding: 12px 16px; margin-top: 10px; color: var(--ink); font-size: 14.5px; white-space: pre-wrap; }"
     ];
@@ -189,7 +232,7 @@ def css_one_line(css: str) -> str {
     return s.strip();
 }
 
-def render_frontend_cl(plan: minicoder.BuildPlan, copy: UiCopy, auth: bool = False, nt: str = "", ai: bool = False) -> str {
+def render_frontend_cl(plan: minicoder.BuildPlan, copy: UiCopy, auth: bool = False, nt: str = "", ai: bool = False, theme: ThemeTokens = ThemeTokens()) -> str {
     fields = plan_fields(plan);
     ffields = form_fields(plan, auth);
     node_t = nt if nt else minicoder._derive_node_name(plan);
@@ -208,7 +251,7 @@ def render_frontend_cl(plan: minicoder.BuildPlan, copy: UiCopy, auth: bool = Fal
     if ai { imp.append("ask_ai"); }
     L.append("sv import from endpoints { " + ", ".join(imp) + " }");
     L.append("");
-    L.append("glob PAGE_CSS: str = " + q + css_one_line(render_style_css(accent_for(plan.name))) + q + ";");
+    L.append("glob PAGE_CSS: str = " + q + css_one_line(render_style_css(theme)) + q + ";");
     L.append("");
     L.append("def:pub app -> JsxElement {");
     L.append("    has items: list[" + node_t + "] = [];");
@@ -719,7 +762,7 @@ the project-wide `jac check` includes the frontend, and a frontend importing a
 node the model didn't name that round fails the check no matter how good the
 decl is (the e2b round-coupling failure)."""
 def sync_frontend(project_dir: str, plan: minicoder.BuildPlan, sk: minicoder.Skeleton,
-                  copy: UiCopy, auth: bool, ai: bool, dry: bool) {
+                  copy: UiCopy, auth: bool, ai: bool, dry: bool, theme: ThemeTokens = ThemeTokens()) {
     if dry { return; }
     decl_src = "";
     for d in sk.decls {
@@ -728,7 +771,7 @@ def sync_frontend(project_dir: str, plan: minicoder.BuildPlan, sk: minicoder.Ske
     nt_real = minicoder._first_node_type(decl_src);
     if nt_real != "Root" {
         minicoder._write(project_dir, "main.jac", render_main_entry(plan, copy, nt_real));
-        minicoder._write(project_dir, "frontend.cl.jac", render_frontend_cl(plan, copy, auth, nt_real, ai));
+        minicoder._write(project_dir, "frontend.cl.jac", render_frontend_cl(plan, copy, auth, nt_real, ai, theme));
         minicoder._write(project_dir, "frontend.impl.jac", render_frontend_impl(plan, auth, nt_real, ai));
     }
 }
@@ -745,6 +788,7 @@ walker build_fullstack {
     has copy: UiCopy = UiCopy();
     has auth_mode: bool = False;
     has ai_mode: bool = False;
+    has theme: ThemeTokens = ThemeTokens();
     has access: dict[str, str] = {};
     has budget: int = 3;
     has dry_run: bool = False;
@@ -787,6 +831,11 @@ walker build_fullstack {
             }
         }
         brief = self.plan.summary + " Endpoints: " + ", ".join([e.name for e in self.plan.endpoints]);
+        try {
+            self.theme = sanitize_theme(pick_theme(self.task + " | " + brief, STYLE_JUDGMENT));
+            minicoder._trace({"station": "plan", "kind": "slot", "slot": "pick_theme",
+                              "output": {"bg": self.theme.bg, "accent": self.theme.accent, "ink": self.theme.ink}});
+        } except Exception {}
         try {
             self.copy = style_copy(brief, STYLE_JUDGMENT);
         } except Exception {
@@ -837,10 +886,10 @@ walker build_fullstack {
             minicoder._write(self.project_dir, "plan.json",
                             json.dumps(minicoder._plan_dict(self.plan), indent=1));
             minicoder._write(self.project_dir, "main.jac", render_main_entry(self.plan, self.copy));
-            minicoder._write(self.project_dir, "frontend.cl.jac", render_frontend_cl(self.plan, self.copy, self.auth_mode, "", self.ai_mode));
+            minicoder._write(self.project_dir, "frontend.cl.jac", render_frontend_cl(self.plan, self.copy, self.auth_mode, "", self.ai_mode, self.theme));
             minicoder._write(self.project_dir, "frontend.impl.jac", render_frontend_impl(self.plan, self.auth_mode, "", self.ai_mode));
             minicoder._write(self.project_dir, "frontend.css",
-                            render_style_css(accent_for(self.plan.name)));
+                            render_style_css(self.theme));
             if self.ai_mode {
                 minicoder._write(self.project_dir, "ai.jac", render_ai_module());
             }
@@ -855,7 +904,7 @@ walker build_fullstack {
         self.skeleton = minicoder.author_decls(self.plan, minicoder.BACKEND_DECL_GUIDE);
         minicoder.force_stub_file(self.skeleton, self.plan);
         minicoder.write_all(self.project_dir, self.skeleton, self.dry_run);
-        sync_frontend(self.project_dir, self.plan, self.skeleton, self.copy, self.auth_mode, self.ai_mode, self.dry_run);
+        sync_frontend(self.project_dir, self.plan, self.skeleton, self.copy, self.auth_mode, self.ai_mode, self.dry_run, self.theme);
         res = minicoder.decl_gates(self.project_dir, self.plan, self.skeleton, self.dry_run);
         minicoder._trace({"station": "declare", "kind": "slot", "slot": "author_decls", "round": 0,
                          "output": minicoder.render_decls(self.skeleton),
@@ -869,7 +918,7 @@ walker build_fullstack {
                 self.log.append("decl-mech-repair");
                 minicoder.force_stub_file(self.skeleton, self.plan);
                 minicoder.write_all(self.project_dir, self.skeleton, self.dry_run);
-                sync_frontend(self.project_dir, self.plan, self.skeleton, self.copy, self.auth_mode, self.ai_mode, self.dry_run);
+                sync_frontend(self.project_dir, self.plan, self.skeleton, self.copy, self.auth_mode, self.ai_mode, self.dry_run, self.theme);
                 res = minicoder.decl_gates(self.project_dir, self.plan, self.skeleton, self.dry_run);
                 minicoder._trace({"station": "declare", "kind": "slot", "slot": "mech_repair", "round": n,
                                  "output": minicoder.render_decls(self.skeleton),
@@ -890,7 +939,7 @@ walker build_fullstack {
             }
             minicoder.force_stub_file(self.skeleton, self.plan);
             minicoder.write_all(self.project_dir, self.skeleton, self.dry_run);
-            sync_frontend(self.project_dir, self.plan, self.skeleton, self.copy, self.auth_mode, self.ai_mode, self.dry_run);
+            sync_frontend(self.project_dir, self.plan, self.skeleton, self.copy, self.auth_mode, self.ai_mode, self.dry_run, self.theme);
             res = minicoder.decl_gates(self.project_dir, self.plan, self.skeleton, self.dry_run);
             minicoder._trace({"station": "declare", "kind": "slot", "slot": "repair_decls", "round": n + 1,
                              "output": minicoder.render_decls(self.skeleton),
