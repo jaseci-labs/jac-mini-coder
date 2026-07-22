@@ -2216,18 +2216,49 @@ glob FIX_WORDS: list[str] = ["fix", "bug", "broken", "wrong", "crash", "error", 
 """The task router (owner=code — P1): a bare workspace means build; an existing
 project means a mutation graph, discriminated by the task's own vocabulary.
 A GEN-ENUM route slot enters only when the graph library outgrows this."""
-def route(work_dir: str, task: str = "") -> str {
-    proj = "";
-    if os.path.exists(os.path.join(work_dir, DECL_FILE)) {
-        proj = work_dir;
-    } else {
-        for child in (os.listdir(work_dir) if os.path.isdir(work_dir) else []) {
-            if os.path.exists(os.path.join(work_dir, child, DECL_FILE)) {
-                proj = os.path.join(work_dir, child);
-                break;
+# A project is any directory a build has written, whatever shape it took. Keying
+# on DECL_FILE alone missed every fullstack project — those declare in
+# endpoints.sv.jac — so the router never saw them, `add`/`fix` had nothing to
+# bind to, and each request started ANOTHER new app beside the last one.
+glob PROJECT_MARKERS: list[str] = ["plan.json", "main.sv.jac", "endpoints.sv.jac", "main.jac"];
+
+def project_dirs(work_dir: str) -> list[str] {
+    out: list[str] = [];
+    try {
+        for name in sorted(os.listdir(work_dir)) {
+            d = os.path.join(work_dir, name);
+            if os.path.isdir(d) and any([os.path.exists(os.path.join(d, m)) for m in PROJECT_MARKERS]) {
+                out.append(d);
             }
         }
+    } except Exception {}
+    return out;
+}
+
+"""The project the user means: the most recently built one. Single source of
+truth — the TUI's summary, the run hint and the router all resolve through this,
+so they cannot disagree about which app is 'current'."""
+def find_project(work_dir: str) -> str {
+    if any([os.path.exists(os.path.join(work_dir, m)) for m in PROJECT_MARKERS]) { return work_dir; }
+    dirs = project_dirs(work_dir);
+    if not dirs { return ""; }
+    best = dirs[0];
+    best_t = 0.0;
+    for d in dirs {
+        t = 0.0;
+        for m in PROJECT_MARKERS {
+            f = os.path.join(d, m);
+            try {
+                if os.path.exists(f) { t = max(t, os.path.getmtime(f)); }
+            } except Exception {}
+        }
+        if t > best_t { best = d; best_t = t; }
     }
+    return best;
+}
+
+def route(work_dir: str, task: str = "") -> str {
+    proj = find_project(work_dir);
     if not proj { return "build_backend"; }
     lowered = task.lower();
     if any([w in lowered for w in FIX_WORDS]) {

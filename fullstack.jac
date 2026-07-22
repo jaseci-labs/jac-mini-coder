@@ -1497,7 +1497,13 @@ def build_full(task: str, work_dir: str, dry_run: bool = False) -> minicoder.Bui
     return w.outcome[0] if w.outcome else minicoder.BuildResult(ok=False, stage="none", message="no report");
 }
 
-glob AUTH_WORDS: list[str] = ["auth", "login", "user", "users", "account", "accounts", "multi-user", "signup", "private"];
+# "multiuser" and "multi user" were missing, so a request that said exactly
+# that twice produced an app with no accounts twice — matched only by the
+# hyphenated spelling. Match the word as people actually type it.
+glob AUTH_WORDS: list[str] = ["auth", "login", "log in", "sign in", "signup", "sign up",
+    "user", "users", "multiuser", "multi user", "multi-user", "multiuse", "multi use",
+    "account", "accounts", "profile", "profiles", "member", "members", "private",
+    "per-user", "per user"];
 glob SHARED_NAME_WORDS: list[str] = ["shared", "team", "board", "feed", "public", "announce",
                                      "timeline", "global", "community", "wall", "everyone"];
 # phrases in the REQUEST that mean "everyone sees this", even when the endpoint

@@ -41,6 +41,7 @@ import json;
 import getpass;
 import subprocess;
 import traceback;
+import re;
 import minicoder;
 import fullstack;
 import mascot;
@@ -190,16 +191,44 @@ def render_event(rec: dict) {
     }
     if kind == "slot" {
         slot = str(rec.get("slot", ""));
-        if slot == "template" {
-            console.print("  [dim]│ writing standard logic[/dim]");
+        # name the thing being worked on. Six identical "writing the logic" lines
+        # say nothing about progress; "writing create_user" says what is left.
+        target = "";
+        inp = rec.get("input", None);
+        if isinstance(inp, dict) {
+            sig = str(inp.get("signatures", ""));
+            m = re.match(r"\s*impl\s+([\w.]+)", sig);
+            if m { target = str(m.group(1)); }
+            elif inp.get("file", "") { target = str(inp.get("file", "")); }
+        }
+        # the planning slots decide the shape of the app — say what they chose
+        out = rec.get("output", None);
+        if (not target) and slot == "plan_build" and isinstance(out, dict) {
+            eps = out.get("endpoints", []);
+            names = [str(e.get("name", "")) for e in eps if isinstance(e, dict)];
+            if names {
+                target = str(out.get("name", "")) + " · " + ", ".join(names[:4]);
+            }
+        }
+        if (not target) and slot == "access_map" and isinstance(out, dict) {
+            target = ", ".join([f"{k}={v}" for (k, v) in out.items()][:4]);
+        }
+        if (not target) and slot in ["pick_theme", "pick_shadcn_style"] and isinstance(out, dict) {
+            target = ", ".join([str(v) for v in out.values()][:4]);
+        }
+        detail = f" [dim]·[/dim] [dim]{target}[/dim]" if target else "";
+        if slot in ["template", "template_fallback"] {
+            console.print(f"  [dim]│ writing standard logic[/dim]{detail}");
         } elif slot == "mech_repair" {
             console.print("  [dim]│ auto-fixing the declarations[/dim]");
+        } elif slot == "fill_impl" {
+            console.print(f"  [dim]│ writing the logic[/dim]{detail}");
         } else {
             ok = rec.get("gate_ok", None);
             mark = "";
             if ok is not None { mark = " [green]✓[/green]" if ok else " [red]✗[/red]"; }
             label = SLOT_LABEL.get(slot, slot);
-            console.print(f"  [dim]│ {label}[/dim]{mark}");
+            console.print(f"  [dim]│ {label}[/dim]{detail}{mark}");
             if (ok is not None) and (not ok) {
                 err = _first_err(str(rec.get("gate_errors", "")));
                 if err { console.print(f"  [dim]│   {err}[/dim]"); }
@@ -495,18 +524,14 @@ def run_task(task: str, work_dir: str, kind_hint: str = "") -> minicoder.BuildRe
 # plan.json is the durable contract written by EVERY build (backend or fullstack);
 # key project detection on it. Entry differs: fullstack serves main.jac, a
 # backend-only project serves its main.sv.jac.
+def _project_dirs(work_dir: str) -> list[str] {
+    return minicoder.project_dirs(work_dir);
+}
+
+"""Resolved by the engine, so the summary, the run hint and the router can never
+disagree about which project is current."""
 def _find_project(work_dir: str) -> str {
-    try {
-        for name in sorted(os.listdir(work_dir)) {
-            d = os.path.join(work_dir, name);
-            if os.path.isdir(d) and (os.path.exists(os.path.join(d, "plan.json"))
-                or os.path.exists(os.path.join(d, "main.jac"))
-                or os.path.exists(os.path.join(d, "main.sv.jac"))) {
-                return d;
-            }
-        }
-    } except Exception {}
-    return "";
+    return minicoder.find_project(work_dir);
 }
 
 def _entry_file(proj: str) -> str {
@@ -515,30 +540,123 @@ def _entry_file(proj: str) -> str {
     return "main.jac";
 }
 
-"""A short project summary for the agent: the built project's path, endpoints,
-and how to run it — so questions like 'how do I start it' are answered from fact."""
-def project_summary(work_dir: str) -> str {
-    proj = _find_project(work_dir);
-    if not proj { return "No project has been built yet in this workspace (" + work_dir + ")."; }
-    endpoints = "";
-    kind = "backend API";
+"""Everything factual about one project, read off disk."""
+def project_facts(proj: str) -> dict[str, any] {
+    eps: list[str] = [];
     pj = os.path.join(proj, "plan.json");
+    summary = "";
     if os.path.exists(pj) {
         try {
             with open(pj) as f { pd = json.load(f); }
-            endpoints = ", ".join([str(e.get("name", "")) for e in pd.get("endpoints", [])]);
+            eps = [str(e.get("name", "")) for e in pd.get("endpoints", [])];
+            summary = str(pd.get("summary", ""));
         } except Exception {}
     }
-    if os.path.exists(os.path.join(proj, "frontend.cl.jac")) { kind = "fullstack web app (backend + UI)"; }
-    return "Current project: " + os.path.basename(proj) + " (" + kind + ") at " + proj
-        + ". Endpoints: " + (endpoints if endpoints else "(see the code)")
-        + ". Run it from that directory with: jac start " + _entry_file(proj);
+    has_ui = os.path.exists(os.path.join(proj, "frontend.cl.jac"));
+    decl: str = "";
+    impl_src: str = "";
+    for nm in ["endpoints.sv.jac", "main.sv.jac"] {
+        f = os.path.join(proj, nm);
+        try {
+            if os.path.exists(f) { decl = decl + open(f).read(); }
+        } except Exception {}
+    }
+    for nm in ["endpoints.sv.impl.jac", "main.sv.impl.jac"] {
+        f = os.path.join(proj, nm);
+        try {
+            if os.path.exists(f) { impl_src = impl_src + open(f).read(); }
+        } except Exception {}
+    }
+    # accounts are real only if the platform auth is actually used
+    per_user = ("walker " in decl.replace("walker:pub", "")) or ("grant(" in impl_src) or ("root.shared" in impl_src);
+    return {"name": os.path.basename(proj), "path": proj, "endpoints": eps,
+            "ui": has_ui, "multiuser": per_user, "summary": summary,
+            "entry": _entry_file(proj)};
+}
+
+"""What the chat agent knows about this workspace.
+
+It used to describe ONE project — the alphabetically first — which is how the
+agent ended up answering questions about a different app than the one that had
+just been built. It now sees every project, what each one is, and which is
+current, so 'what did you build' and 'does it have accounts' are answered from
+disk rather than from the last thing in the conversation."""
+def project_summary(work_dir: str) -> str {
+    dirs = _project_dirs(work_dir);
+    if not dirs {
+        return "The workspace " + short_path(work_dir) + " is empty — nothing has been built here yet.";
+    }
+    cur = _find_project(work_dir);
+    lines: list[str] = ["Workspace " + short_path(work_dir) + " contains "
+                        + str(len(dirs)) + " project(s):"];
+    for d in dirs {
+        f = project_facts(d);
+        tag = " [most recent — 'the current project' means this one]" if d == cur else "";
+        lines.append("- " + str(f["name"]) + tag
+            + ": " + ("fullstack web app (backend + UI)" if f["ui"] else "backend API, no UI")
+            + ("; per-user accounts" if f["multiuser"] else "; NO accounts — every visitor shares one public graph")
+            + ". endpoints: " + (", ".join(f["endpoints"]) if f["endpoints"] else "(see code)")
+            + ". run: cd " + str(f["path"]) + " && jac start " + str(f["entry"]));
+        if f["summary"] { lines.append("  purpose: " + str(f["summary"])[:200]); }
+    }
+    return "\n".join(lines);
 }
 
 def run_hint(work_dir: str) -> str {
     proj = _find_project(work_dir);
     if not proj { return ""; }
     return "cd " + proj + " && jac start " + _entry_file(proj);
+}
+
+"""Say what is about to happen, in the user's terms, and let them correct it.
+
+Every field here is derived from the SAME functions the router will use, so the
+preview cannot drift from the build. It exists because the router used to decide
+silently: a request to change the current project started a second one instead,
+and 'multiuser' missed the auth vocabulary by a hyphen, so an app shipped with
+no accounts and nothing said so until the user read the code."""
+def preview_plan(line: str, kind: str, work_dir: str) -> dict[str, str] {
+    dirs = _project_dirs(work_dir);
+    cur = _find_project(work_dir);
+    front = fullstack.wants_frontend(line);
+    auth = fullstack.wants_auth(line);
+    if kind == "build" {
+        where = "a new project in " + short_path(work_dir);
+        what = "build a fullstack web app (backend + UI)" if front else "build a backend API (no UI)";
+    } elif kind == "fix" {
+        where = short_path(cur) if cur else short_path(work_dir);
+        what = "fix a bug in " + (os.path.basename(cur) if cur else "the project");
+    } else {
+        where = short_path(cur) if cur else short_path(work_dir);
+        what = "add to " + (os.path.basename(cur) if cur else "the project");
+    }
+    return {"what": what, "where": where,
+            "accounts": "yes — per-user login" if auth else "no — one shared public graph",
+            "ambiguous": "1" if (kind == "build" and len(dirs) > 0) else ""};
+}
+
+"""Show the plan and get a yes. Returns the (possibly re-routed) kind, or "" to
+abandon. A bare Enter accepts."""
+def confirm_plan(line: str, kind: str, work_dir: str) -> str {
+    pv = preview_plan(line, kind, work_dir);
+    cur = _find_project(work_dir);
+    console.print("  [dim]here's what I'll do:[/dim]");
+    console.print(f"    [dim]·[/dim] {pv['what']}");
+    console.print(f"    [dim]·[/dim] in {pv['where']}");
+    console.print(f"    [dim]·[/dim] accounts: {pv['accounts']}");
+    # The one question worth interrupting for: a workspace that already holds a
+    # project, and a request that could mean either "change it" or "start over".
+    if pv["ambiguous"] and cur {
+        console.print(f"    [yellow]?[/yellow] [dim]{short_path(cur)} already exists here.[/dim]");
+        console.print("  [dim]proceed / [/dim]c[dim]hange the existing one / [/dim]n[dim]o  [Y/c/n][/dim] ", end="");
+    } else {
+        console.print("  [dim]proceed?  [Y/n][/dim] ", end="");
+    }
+    try { ans = input("").strip().lower(); }
+    except Exception { return kind; }
+    if ans in ["n", "no"] { return ""; }
+    if ans in ["c", "change", "existing"] { return "add"; }
+    return kind;
 }
 
 """Print a byLLM streaming generator token-by-token. Markup is disabled so a
@@ -578,6 +696,12 @@ def handle_message(line: str, work_dir: str) {
     }
     agent_head();
     console.print(intent.blurb if intent.blurb else "Working on it.", markup=False, highlight=False);
+    # confirm the route before spending a build on the wrong one
+    intent.kind = confirm_plan(line, intent.kind, work_dir);
+    if not intent.kind {
+        console.print("  [dim]ok — nothing built. Tell me what you'd like instead.[/dim]");
+        return;
+    }
     # Build from the USER'S OWN WORDS, with the rephrasing only as extra context.
     # Every downstream classifier is vocabulary-driven (wants_public / wants_auth /
     # wants_ai / plan_fidelity), and the model's rephrasing silently dropped signal
