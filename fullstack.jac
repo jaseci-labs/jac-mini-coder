@@ -515,6 +515,10 @@ def gate_mu(project_dir: str, plan: minicoder.BuildPlan, access: dict[str, str],
                 pd = json.loads(e.example_json);
                 for k in pd.keys() {
                     v = pd[k];
+                    # never probe an identity field: under auth it is filled from
+                    # the session, so the value we POSTed is intentionally NOT
+                    # stored and asserting on it fails a correct app
+                    if minicoder.is_identity_field(str(k)) { continue; }
                     if isinstance(v, str) and len(v) >= 3 { probes[e.name] = v; break; }
                 }
             } except Exception {}
@@ -788,6 +792,15 @@ walker build_fullstack {
         if not self.copy.title { self.copy.title = self.plan.name; }
         if not self.copy.submit_label { self.copy.submit_label = "Add"; }
         self.auth_mode = wants_auth(self.task);
+        if self.auth_mode {
+            keep_eps = [e for e in self.plan.endpoints if not is_auth_endpoint(e.name)];
+            if keep_eps and (len(keep_eps) < len(self.plan.endpoints)) {
+                dropped = [e.name for e in self.plan.endpoints if is_auth_endpoint(e.name)];
+                self.plan.endpoints = keep_eps;
+                minicoder._trace({"station": "plan", "kind": "slot", "slot": "auth_endpoint_fold",
+                                  "output": dropped});
+            }
+        }
         if self.auth_mode {
             self.access = derive_access(self.plan, self.task);
             minicoder.ACCESS = self.access;
@@ -1079,6 +1092,19 @@ def derive_access(plan: minicoder.BuildPlan, task: str) -> dict[str, str] {
         }
     }
     return m;
+}
+
+# the platform already provides auth (jacSignup / jacLogin + per-user roots).
+# A model-planned login/register endpoint is worse than redundant: it became the
+# app's "primary write", so the main form was built from {username, password},
+# and the shared-write template stored those CREDENTIALS in the public commons.
+glob AUTH_EP_WORDS: list[str] = ["login", "log_in", "signin", "sign_in", "signup",
+                                 "sign_up", "register", "create_user", "create_account",
+                                 "authenticate", "auth"];
+
+def is_auth_endpoint(name: str) -> bool {
+    nl = name.lower();
+    return any([w in nl for w in AUTH_EP_WORDS]);
 }
 
 glob AI_WORDS: list[str] = ["ai", "assistant", "agentic", "ask-ai", "chatbot", "intelligent", "llm"];
