@@ -1036,6 +1036,19 @@ def is_identity_field(f: str) -> bool {
     return f.lower() in IDENTITY_FIELDS;
 }
 
+"""The identity field the model declared on node `nt`, if any — the author line
+the timeline should show. Read from the DECL, not the plan: the plan describes
+the form payload (which must never carry an author), while the node is where the
+model puts `author_id`/`username`."""
+def _node_identity_field(decl_src: str, nt: str) -> str {
+    m = re.search(r"(?m)^\s*node\s+" + nt + r"\s*\{([\s\S]*?)\}", decl_src);
+    if not m { return ""; }
+    for hm in re.findall(r"\bhas\s+(\w+)\s*:", str(m.group(1))) {
+        if is_identity_field(str(hm)) { return str(hm); }
+    }
+    return "";
+}
+
 """Drop `def name(...);` signatures declared INSIDE a walker/node/edge body.
 
 A walker's contract here is its abilities (`can X with Y entry`) — those are what
@@ -1415,6 +1428,16 @@ def block_template(sig: str, decl_src: str) -> str {
             }
         }
         if node_fields { fields = [f for f in fields if f in node_fields]; }
+        # Identity comes from the NODE's fields, not the walker's. A small model
+        # writes `walker post_tweet { has content; }` against `node Tweet { has
+        # content; has author_id; }` — the author field is on the node and on no
+        # walker, so a walker-driven arg list leaves it "" and every post is
+        # anonymous (the gates all still pass: it compiles, serves, and renders).
+        # These fields can never come from the request anyway, so sourcing them
+        # from the session is the only correct reading of the declaration.
+        for nf in node_fields {
+            if ACCESS and is_identity_field(nf) and (nf not in fields) { fields.append(nf); }
+        }
         if fields {
             # authenticated app → the author is taken from the session
             argl: list[str] = [];

@@ -405,7 +405,7 @@ def render_frontend_cl(plan: minicoder.BuildPlan, copy: UiCopy, auth: bool = Fal
 No stylesheet is emitted — the look comes from the project's [jac-shadcn] theme.
 Handler names match render_frontend_impl exactly so the annex is unchanged."""
 def render_shadcn_page(plan: minicoder.BuildPlan, copy: UiCopy, auth: bool = False,
-                       nt: str = "", ai: bool = False) -> str {
+                       nt: str = "", ai: bool = False, idf: str = "") -> str {
     fields = plan_fields(plan);
     ffields = form_fields(plan, auth);
     node_t = nt if nt else minicoder._derive_node_name(plan);
@@ -522,6 +522,11 @@ def render_shadcn_page(plan: minicoder.BuildPlan, copy: UiCopy, auth: bool = Fal
     L.append("          {for (i, it) in enumerate(items) {");
     L.append("            <Card key={str(i)}>");
     L.append("              <CardContent className=" + q + "pt-6 flex flex-col gap-1" + q + ">");
+    # author line first, X-style — only when the node declares one and the form
+    # doesn't already carry it (identity is session-derived, never typed in)
+    if idf and (idf not in fields) {
+        L.append("                <p className=" + q + "text-xs font-semibold text-muted-foreground" + q + ">{it." + idf + "}</p>");
+    }
     if fields {
         L.append("                <p className=" + q + "text-sm font-semibold" + q + ">{it." + fields[0] + "}</p>");
         for f in fields[1:] {
@@ -869,8 +874,19 @@ def _wait_server(port: int, timeout_s: int = 180) -> bool {
     return False;
 }
 
+# `jac browse` keeps ONE browser profile per session name, and the default
+# session outlives the build. A token minted for a PREVIOUS project therefore
+# arrives in localStorage of the next one: jacIsLoggedIn() sees a token, the app
+# renders the post form, the gate concludes it is signed in — and every write
+# 401s against a database that never issued that token. Observed as "filled and
+# clicked the form but nothing was written" on an app that is entirely correct.
+# Every gate invocation gets its own session so no state crosses builds.
+glob BROWSE_SESSION: str = "";
+
 def _browse(args: list[str], cwd: str) -> str {
-    r = subprocess.run([JAC, "browse"] + args, cwd=cwd, capture_output=True, text=True, timeout=120);
+    cmd = [JAC, "browse"];
+    if BROWSE_SESSION { cmd = cmd + ["-s", BROWSE_SESSION]; }
+    r = subprocess.run(cmd + args, cwd=cwd, capture_output=True, text=True, timeout=120);
     return (r.stdout or "") + (r.stderr or "");
 }
 
@@ -915,19 +931,24 @@ def gate_ui(project_dir: str, plan: minicoder.BuildPlan, shot_path: str, dry: bo
     probe = "uiprobe" + str(int(time.time())) + "zq";
     email = "uiuser@example.com";
     pw = "uipw12345";
-    already = False;
+    # isolate this invocation's browser from every other build on the machine
+    BROWSE_SESSION = "uig" + str(int(time.time()));
     try {
         _browse(["open", base], project_dir);
         if auth {
-            # The browser session can survive a previous run (restyle re-check,
-            # a manual drive), in which case the app opens ALREADY signed in and
-            # there is no login card to fill. Treat that as authenticated rather
-            # than declaring the page broken.
+            # This session is brand new, so a signed-out app MUST show the login
+            # card. Reaching the post form without one means the app never gates
+            # on auth — a real defect, and previously the gate's biggest false
+            # pass: it read "already signed in" and waved the build through.
             wa = _browse(["wait", "#a-email"], project_dir);
             if "waited for" not in wa.lower() {
                 w0 = _browse(["wait", "#f-submit"], project_dir);
                 if "waited for" in w0.lower() {
-                    already = True;
+                    ev = _ui_evidence(project_dir, "noauth");
+                    _browse(["close"], project_dir);
+                    return minicoder.CheckResult(ok=False,
+                        errors="UI: the app served the post form to a signed-out visitor — "
+                            + "no login was required." + ev);
                 } else {
                     ev = _ui_evidence(project_dir, "authcard");
                     _browse(["close"], project_dir);
@@ -936,23 +957,33 @@ def gate_ui(project_dir: str, plan: minicoder.BuildPlan, shot_path: str, dry: bo
                             + wa[:140] + ev);
                 }
             }
-            if not already {
-                _browse(["fill", "#a-email", email], project_dir);
-                _browse(["fill", "#a-password", pw], project_dir);
-                _browse(["click", "#a-signup"], project_dir);
-            }
-            # WAIT for the session to actually establish, and say so if it never does
-            authed = already;
+            _browse(["fill", "#a-email", email], project_dir);
+            _browse(["fill", "#a-password", pw], project_dir);
+            _browse(["click", "#a-signup"], project_dir);
+            # WAIT for the session to actually establish, and say so if it never does.
+            # The only trustworthy signal is the Log out button — it is in our own
+            # template and renders only when authed. ("Password" not in snapshot)
+            # was the old test and it passes on an EMPTY snapshot, i.e. it called a
+            # dead page authenticated.
+            authed = False;
+            tried_login = False;
             t = 0;
             while t < 20 {
                 time.sleep(2);
                 sn = _browse(["snapshot"], project_dir);
-                if ("Log out" in sn) or ("Password" not in sn) {
-                    authed = True; break;
+                if "Log out" in sn { authed = True; break; }
+                # The gate runs twice per build (again after the restyle) against one
+                # database, so by the second run this account already exists. That is
+                # not a defect in the app — sign IN instead of up and carry on.
+                if (not tried_login) and (("email may be in use" in sn) or ("Signup failed" in sn)) {
+                    tried_login = True;
+                    _browse(["fill", "#a-email", email], project_dir);
+                    _browse(["fill", "#a-password", pw], project_dir);
+                    _browse(["click", "#a-login"], project_dir);
+                    t += 1;
+                    continue;
                 }
-                if ("Signup failed" in sn) or ("email may be in use" in sn) or ("Invalid credentials" in sn) {
-                    break;
-                }
+                if "Invalid credentials" in sn { break; }
                 t += 1;
             }
             if not authed {
@@ -1055,8 +1086,9 @@ def sync_frontend(project_dir: str, plan: minicoder.BuildPlan, sk: minicoder.Ske
     }
     nt_real = minicoder._first_node_type(decl_src);
     if nt_real != "Root" {
+        idf = minicoder._node_identity_field(decl_src, nt_real) if auth else "";
         minicoder._write(project_dir, "main.jac", render_shadcn_main(plan, copy, nt_real));
-        minicoder._write(project_dir, "frontend.cl.jac", render_shadcn_page(plan, copy, auth, nt_real, ai));
+        minicoder._write(project_dir, "frontend.cl.jac", render_shadcn_page(plan, copy, auth, nt_real, ai, idf));
         minicoder._write(project_dir, "frontend.impl.jac", render_frontend_impl(plan, auth, nt_real, ai));
     }
 }
