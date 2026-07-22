@@ -423,12 +423,13 @@ def render_frontend_impl(plan: minicoder.BuildPlan, auth: bool = False, nt: str 
         # write's own report is not enough: on a shared/commons write the fresh
         # node may not come back hydrated, and other users' rows are missing
         # entirely — the row lands in the graph but the page never shows it.
-        # AWAITED: loadItems assigns `items = result.reports`, so an unawaited
-        # call lands later and can overwrite the optimistic append with a read
-        # taken before the write settled — the new row vanishes from the page.
-        # Awaiting also guarantees the read happens after the writer invalidated
-        # the reader cache, so it returns everyone's rows.
-        if lname { L.append("    await loadItems();"); }
+        # NO post-write refetch. It was added on reasoning ("write-then-refetch
+        # is canonical") and MEASURED WORSE: loadItems assigns
+        # `items = result.reports`, and that read comes back from the client's
+        # reader cache (the empty list from page load), wiping the optimistic
+        # append — the page showed "No tweets found" right after a successful
+        # post. Append-only renders correctly in manual drives. Other users'
+        # rows arrive on the next mount/refresh.
         for f in fields { L.append("    " + f + " = " + q + q + ";"); }
         L.append("}");
     }
