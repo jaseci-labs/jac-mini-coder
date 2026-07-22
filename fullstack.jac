@@ -1024,7 +1024,18 @@ def build_full(task: str, work_dir: str, dry_run: bool = False) -> minicoder.Bui
 }
 
 glob AUTH_WORDS: list[str] = ["auth", "login", "user", "users", "account", "accounts", "multi-user", "signup", "private"];
-glob SHARED_NAME_WORDS: list[str] = ["shared", "team", "board", "feed", "public", "announce"];
+glob SHARED_NAME_WORDS: list[str] = ["shared", "team", "board", "feed", "public", "announce",
+                                     "timeline", "global", "community", "wall", "everyone"];
+# phrases in the REQUEST that mean "everyone sees this", even when the endpoint
+# name itself is neutral (post_tweet / list_timeline name no commons)
+glob PUBLIC_INTENT: list[str] = ["public", "everyone", "every user", "all users",
+                                 "other users", "shared", "global", "anyone", "each other"];
+
+"""Does the request ask for data that all users see?"""
+def wants_public(task: str) -> bool {
+    t = task.lower();
+    return any([p in t for p in PUBLIC_INTENT]);
+}
 glob ADMIN_NAME_WORDS: list[str] = ["delete", "remove", "clear", "manage", "admin"];
 
 def wants_auth(task: str) -> bool {
@@ -1043,6 +1054,12 @@ def derive_access(plan: minicoder.BuildPlan, task: str) -> dict[str, str] {
         if ("admin" in t) and any([w in nl for w in ADMIN_NAME_WORDS]) {
             m[e.name] = "admin";
         } elif any([w in nl for w in SHARED_NAME_WORDS]) {
+            m[e.name] = "shared";
+        } elif wants_public(task) {
+            # the REQUEST says everyone sees it. Endpoint names alone missed this
+            # ('post_tweet'/'list_timeline' name no commons), so every non-admin
+            # endpoint became per-user private: each user saw only their OWN
+            # posts — a private feed wearing a timeline's name.
             m[e.name] = "shared";
         } else {
             m[e.name] = "priv";
