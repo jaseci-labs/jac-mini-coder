@@ -240,6 +240,63 @@ def _normalize_ep_name(name: str) -> str {
     return str(m[-1]) if m else t;
 }
 
+"""Make each declared endpoint walker actually accept its planned payload.
+
+The frontend and the runtime gate are generated from the PLAN, while the walker
+is declared by the MODEL — when they disagree the app cannot compile:
+`post_tweet(content=content)` against `walker post_tweet { has tweet: Tweet; }`
+gives E1052 (no such parameter) plus E1050 (required 'tweet' missing).
+
+Two mechanical repairs: drop has-fields typed as a NODE (they can't arrive as
+JSON and, having no default, become required parameters), and add any planned
+payload field the walker is missing."""
+def reconcile_walker_fields(sk: Skeleton, plan: BuildPlan) {
+    for d in sk.decls {
+        if ".impl." in d.path { continue; }
+        nodes = [str(m) for m in re.findall(r"(?m)^\s*node\s+(\w+)", d.source)];
+        for e in plan.endpoints {
+            wm = re.search(r"(walker(?::\w+)?\s+" + e.name + r"\s*\{)", d.source);
+            if wm is None { continue; }
+            start = wm.end();
+            depth = 1;
+            i = start;
+            while i < len(d.source) and depth > 0 {
+                if d.source[i] == "{" { depth += 1; }
+                elif d.source[i] == "}" { depth -= 1; }
+                i += 1;
+            }
+            body = d.source[start:i - 1];
+            new_body = body;
+            # 1 · drop node-typed has-fields (not JSON-able, and required)
+            for hm in re.findall(r"(?m)^\s*has\s+(\w+)\s*:\s*(\w+)\s*;", body) {
+                fname = str(hm[0]);
+                ftype = str(hm[1]);
+                if fname == "reports" { continue; }
+                if ftype in nodes {
+                    new_body = re.sub(r"(?m)^\s*has\s+" + fname + r"\s*:\s*" + ftype + r"\s*;\s*$", "", new_body);
+                }
+            }
+            # 2 · add any planned payload field the walker lacks
+            add = "";
+            try {
+                pd = json.loads(e.example_json);
+                for k in pd.keys() {
+                    kk = str(k);
+                    if kk == "reports" { continue; }
+                    if re.search(r"\bhas\s+" + kk + r"\s*:", new_body) is None {
+                        t = _json_type(pd[k]);
+                        dflt = " = \"\"" if t == "str" else (" = 0" if t in ["int", "float"] else " = []");
+                        add = add + "\n    has " + kk + ": " + t + dflt + ";";
+                    }
+                }
+            } except Exception {}
+            if (new_body != body) or add {
+                d.source = d.source[:start] + new_body.rstrip() + add + "\n" + d.source[i - 1:];
+            }
+        }
+    }
+}
+
 """Mechanical plan hygiene applied right after the model plans (owner=code)."""
 def normalize_plan(plan: BuildPlan) {
     for e in plan.endpoints {
@@ -1104,6 +1161,8 @@ def force_stub_file(sk: Skeleton, plan: BuildPlan) {
         }
     }
     ensure_decl_completeness(sk, plan);
+    # the declared walker must accept the payload the frontend/gate will send
+    reconcile_walker_fields(sk, plan);
     # AFTER completeness: the primary node may have just been synthesized, and
     # dangling refs can only be pointed at a node that exists
     unify_node_refs(sk);
