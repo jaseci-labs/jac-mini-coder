@@ -423,7 +423,12 @@ def render_frontend_impl(plan: minicoder.BuildPlan, auth: bool = False, nt: str 
         # write's own report is not enough: on a shared/commons write the fresh
         # node may not come back hydrated, and other users' rows are missing
         # entirely — the row lands in the graph but the page never shows it.
-        if lname { L.append("    loadItems();"); }
+        # AWAITED: loadItems assigns `items = result.reports`, so an unawaited
+        # call lands later and can overwrite the optimistic append with a read
+        # taken before the write settled — the new row vanishes from the page.
+        # Awaiting also guarantees the read happens after the writer invalidated
+        # the reader cache, so it returns everyone's rows.
+        if lname { L.append("    await loadItems();"); }
         for f in fields { L.append("    " + f + " = " + q + q + ";"); }
         L.append("}");
     }
