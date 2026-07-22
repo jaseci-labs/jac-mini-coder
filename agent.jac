@@ -46,7 +46,7 @@ sem chat_reply.project = "The current project summary (files, endpoints, how to 
 
 """One-line plain-language wrap-up after a build/add/fix finished. Streams."""
 def wrap_up(what: str, outcome: str, run_hint: str) -> str by llm(stream=True, temperature=0.3);
-sem wrap_up = "Tell the user, in one or two friendly sentences, that the work is done, what they now have, and how to run or see it. If the outcome says it failed, be honest and suggest the next step instead.";
+sem wrap_up = "In one or two friendly sentences: if the outcome SUCCEEDED, say what they now have and give the run command verbatim. If the outcome FAILED, do NOT give a run command and do NOT tell them to run or start the project — it does not work. Say plainly which stage failed, then suggest a next step: try a stronger model with /model, or restate the request more simply.";
 sem wrap_up.what = "What was requested.";
 sem wrap_up.outcome = "The builder's result (ok/failed + a short message).";
 sem wrap_up.run_hint = "How to run the project (a shell command), or empty if not applicable.";

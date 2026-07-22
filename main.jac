@@ -125,7 +125,8 @@ def _first_err(errs: str) -> str {
     for ln in errs.split("\n") {
         t = ln.strip();
         if not t { continue; }
-        if t.startswith("Checking") or t.startswith("✔") or t.startswith("✖ Error:") { continue; }
+        if t.startswith("✖ Error:") { t = t.split("✖ Error:", 1)[1].strip(); }
+        if t.startswith("Checking") or t.startswith("✔") or (not t) { continue; }
         if t.endswith("...") or t.startswith("=") or t.startswith("-") { continue; }
         if ("error[" in t) or ("COMPLETENESS" in t) or ("IMPL-" in t) or ("MULTI-USER" in t)
             or ("UI:" in t) or ("RUNTIME" in t) or ("Cannot" in t) or ("Expected" in t) {
@@ -508,7 +509,7 @@ def handle_message(line: str, work_dir: str) {
     outcome = ("succeeded: " + res.message) if res.ok
         else ("FAILED at " + res.stage + " — " + res.message.split("\n")[0][:200]);
     console.print("  ", end="");
-    try { stream_out(agent.wrap_up(task, outcome, run_hint(work_dir))); }
+    try { stream_out(agent.wrap_up(task, outcome, run_hint(work_dir) if res.ok else "")); }
     except Exception {
         # streaming wrap-up unavailable → fall back to a plain status line
         if res.ok { console.print("[green]done.[/green] [dim]" + res.message + "[/dim]", markup=True); }

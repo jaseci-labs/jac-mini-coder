@@ -892,6 +892,33 @@ def ensure_decl_completeness(sk: Skeleton, plan: BuildPlan) {
     }
 }
 
+"""Rewrite references to UNDECLARED node types onto the real one.
+
+A weak model declares `node Tweet {...}` and then writes `has reports: list[Note]`
+and `can collect with Note entry` — Note never exists. The write path then builds
+one type while the read path collects another, so the app compiles, serves, and
+still shows nothing (the UI gate's 'filled the form but the value never appeared').
+Point every dangling node reference at the primary declared node."""
+def unify_node_refs(sk: Skeleton) {
+    for d in sk.decls {
+        if ".impl." in d.path { continue; }
+        declared = [str(m) for m in re.findall(r"(?m)^\s*node\s+(\w+)", d.source)];
+        if not declared { continue; }
+        primary = declared[0];
+        for ref in set([str(m) for m in re.findall(r"list\[(\w+)\]", d.source)]
+                       + [str(m) for m in re.findall(r"with\s+(\w+)\s+entry", d.source)]) {
+            if ref == primary { continue; }
+            if ref in ["Root", "str", "int", "float", "bool", "dict", "list", "any"] { continue; }
+            # NOTE: this rewrites SECONDARY declared nodes too. The block
+            # templates are single-node by construction, so a walker reporting
+            # one type while another collects a different one can only produce
+            # the compiles-serves-shows-nothing failure.
+            d.source = re.sub(r"list\[" + ref + r"\]", "list[" + primary + "]", d.source);
+            d.source = re.sub(r"with\s+" + ref + r"\s+entry", "with " + primary + " entry", d.source);
+        }
+    }
+}
+
 glob AI_TWIN_WORDS: list[str] = ["assistant", "chatbot", "chat", "answer", "inquire", "query"];
 
 """Remove model-authored 'assistant'-style walkers (ask_assistant, chat_bot,
@@ -931,7 +958,15 @@ that path) and impl_targets is code-derived — the model cannot drop either."""
 def force_stub_file(sk: Skeleton, plan: BuildPlan) {
     for d in sk.decls {
         # strip model-echoed path-tag lines and unescape quote artifacts
-        d.source = re.sub(r"(?m)^\s*===.*===\s*$", "", d.source).replace("\\'", "'");
+        # strip model-echoed path-tag lines and JSON-escape artifacts. A small
+        # model emits `has x: str = \\"\\";` (escaped quotes) straight from its typed
+        # output — E0100 unterminated string, and the file never parses, so even
+        # mechanical repair can't run on it.
+        d.source = re.sub(r"(?m)^\s*===.*===\s*$", "", d.source)
+            .replace("\\'", "'").replace('\\"', '"');
+        # `edge Rel Wrote { ... }` — two identifiers is not a declaration a weak
+        # model can recover from; keep the first name so the block parses
+        d.source = re.sub(r"(?m)^(\s*edge\s+\w+)\s+\w+(\s*\{)", r"\1\2", d.source);
     }
     # the contract is TWO files — drop any hallucinated extras before they can
     # fail a gate (models occasionally invent main.impl.jac / helper files).
@@ -950,6 +985,12 @@ def force_stub_file(sk: Skeleton, plan: BuildPlan) {
         sk.decls.append(DeclFile(path=DECL_FILE, role=FileRole.DECL, source=""));
     }
     sk.decls = [d for d in sk.decls if d.path == DECL_FILE];
+    # BEFORE synthesizing a node for a dangling collector type: if a node is
+    # already declared, point the dangling refs at IT. Otherwise we end up with
+    # two nodes (the declared one + a synthesized one), the write template picks
+    # the first and the reader collects the other — the app compiles, serves,
+    # and shows nothing.
+    unify_node_refs(sk);
     # a walker referencing an undeclared node type is a one-decl omission —
     # synthesize the node from the union of endpoint payload fields
     for d in sk.decls {
@@ -974,6 +1015,9 @@ def force_stub_file(sk: Skeleton, plan: BuildPlan) {
         }
     }
     ensure_decl_completeness(sk, plan);
+    # AFTER completeness: the primary node may have just been synthesized, and
+    # dangling refs can only be pointed at a node that exists
+    unify_node_refs(sk);
     if ACCESS {
         for d in sk.decls {
             if ".impl." in d.path { continue; }
@@ -1205,7 +1249,10 @@ def block_template(sig: str, decl_src: str) -> str {
             if line.strip().startswith("}") { cur = ""; continue; }
             h = re.match(r"\s*has\s+(\w+)\s*:", line);
             if h and cur == wname and str(h.group(1)) != "reports" {
-                fields.append(str(h.group(1)));
+                # dedupe: a walker repeated in the decl surface (repair rounds,
+                # duplicated blocks) would otherwise emit `User(title=..., title=...)`
+                # — E0065 duplicate keyword argument, from OUR OWN template
+                if str(h.group(1)) not in fields { fields.append(str(h.group(1))); }
             }
         }
         if fields {
