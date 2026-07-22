@@ -348,6 +348,7 @@ def run_task(task: str, work_dir: str) {
         os.makedirs(work_dir, exist_ok=True);
     }
     kind = minicoder.route(work_dir, task);
+    res = minicoder.BuildResult(ok=False, stage="none", message="no result", files=[]);
     with console.status("[orange3]✳[/orange3] [bold]Routing…[/bold] [dim](ctrl+c to interrupt)[/dim]") as st {
         STATUS = st;
         try {
@@ -366,6 +367,15 @@ def run_task(task: str, work_dir: str) {
                 console.print("[b]⏺[/b] route [dim]→[/dim] build_backend");
                 res = minicoder.smith(task, work_dir);
             }
+        } except Exception as e {
+            # last-ditch net: any slot can still throw (a small model returning
+            # invalid typed output, a transport hiccup). Show a clean, actionable
+            # line instead of a stack trace.
+            res = minicoder.BuildResult(ok=False, stage="error",
+                message="hit an unexpected error — often a small model returning invalid "
+                    + "output for a task this complex. Try a stronger model with /model "
+                    + "(gemma4:e4b or a hosted API). Details: " + str(e)[:200],
+                files=[]);
         } finally {
             STATUS = None;
         }
@@ -374,7 +384,7 @@ def run_task(task: str, work_dir: str) {
         console.print(f"[b]⏺[/b] [green bold]OK[/green bold] [dim]{res.message}[/dim]");
     } else {
         console.print(f"[b]⏺[/b] [red bold]FAILED[/red bold] at [red]{res.stage}[/red]");
-        console.print("  [dim]⎿  " + res.message[:300].split("\n")[0] + "[/dim]");
+        console.print("  [dim]⎿  " + res.message.split("\n")[0][:400] + "[/dim]");
     }
 }
 

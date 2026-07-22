@@ -1416,6 +1416,7 @@ walker build_backend {
                 "gate_ok": res.ok, "gate_errors": res.errors[:2000]});
         n = 0;
         mech_n = 0;
+        model_failed = False;
         while (not res.ok) and (n < self.budget) {
             # free mechanical repair first (bounded — a non-idempotent corner
             # must never be able to loop); model repair for the rest
@@ -1431,7 +1432,16 @@ walker build_backend {
                 continue;
             }
             self.log.append("decl-repair-" + str(n + 1));
-            self.skeleton = repair_decls(render_decls(self.skeleton), res.errors);
+            # a small model can fail to emit a valid Skeleton — catch byLLM's
+            # typed-output exception instead of crashing the whole build
+            try {
+                self.skeleton = repair_decls(render_decls(self.skeleton), res.errors);
+            } except Exception as e {
+                _trace({"station": "declare", "kind": "slot", "slot": "repair_decls_error",
+                        "round": n + 1, "output": str(e)[:300]});
+                model_failed = True;
+                break;
+            }
             force_stub_file(self.skeleton, self.plan);
             write_all(self.project_dir, self.skeleton, self.dry_run);
             res = decl_gates(self.project_dir, self.plan, self.skeleton, self.dry_run);
@@ -1441,7 +1451,14 @@ walker build_backend {
             n += 1;
         }
         if not res.ok {
-            self.outcome.append(BuildResult(ok=False, stage="decl", message=res.errors, files=self.log));
+            msg = res.errors;
+            if model_failed {
+                msg = "the model couldn't produce a valid declaration for this task — likely "
+                    + "too small for it. Try a stronger model: gemma4:e4b "
+                    + "(/model ollama_chat/gemma4:e4b) or a hosted model (/model). "
+                    + "Last gate errors:\n" + res.errors;
+            }
+            self.outcome.append(BuildResult(ok=False, stage="decl", message=msg, files=self.log));
             disengage;
         }
         visit [-->];
