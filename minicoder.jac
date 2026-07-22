@@ -180,6 +180,26 @@ sem fill_impl = "Write the real Jac body for exactly ONE impl block — the sing
 sem fill_impl.signatures = "The ONE impl signature to implement.";
 sem fill_impl.context = "The frozen decl surface + intent + the scoped Jac impl guide (+ errors and the current block when repairing).";
 
+"""A walker endpoint's request body is a JSON OBJECT of its `has` fields. A weak
+model sometimes plans `example_json` as an array ("[]") or a scalar — the runtime
+gate then POSTs a malformed body and every call fails even though the generated
+code is correct. Coerce to an object: unwrap a list-of-objects, else empty."""
+def _normalize_example(js: str) -> str {
+    try {
+        v = json.loads(js);
+        if isinstance(v, dict) { return json.dumps(v); }
+        if isinstance(v, list) and len(v) > 0 and isinstance(v[0], dict) { return json.dumps(v[0]); }
+    } except Exception {}
+    return "{}";
+}
+
+"""Mechanical plan hygiene applied right after the model plans (owner=code)."""
+def normalize_plan(plan: BuildPlan) {
+    for e in plan.endpoints {
+        e.example_json = _normalize_example(e.example_json);
+    }
+}
+
 def plan_add(task: str, current: str) -> EndpointSpec by llm(temperature=0.1);
 sem plan_add = "The project already exists (its decl surface is given). Plan ONE new REST endpoint that fulfils the task: its walker:pub name and a runnable example payload.";
 sem plan_add.task = "What the new endpoint must do.";
@@ -1079,6 +1099,25 @@ def block_guide(sig: str) -> str {
     return "This is a plain function body: pure Jac (braces+semicolons), return the declared type.";
 }
 
+"""Keep ONLY the impl block that answers the requested signature.
+
+A small model often returns the right block PLUS invented extras — function-style
+`impl add_bookmark(title: str) -> Bookmark { ... }` alongside the real
+`impl add_bookmark.run with Root entry { ... }`. Those extras match no declared
+signature, are frequently invalid Jac, and the model re-emits them every repair
+round, so the build never converges. The impl file may only contain blocks for
+DECLARED signatures — enforce that mechanically here."""
+def keep_requested_block(block: str, sig: str) -> str {
+    want = block_key(sig);
+    segs = [x.strip() for x in re.split(r"(?m)^(?=impl\s)", block) if x.strip()];
+    if len(segs) <= 1 { return block; }
+    for seg in segs {
+        if block_key(seg) == want { return seg; }
+    }
+    # nothing matched the request — keep the first segment rather than all of them
+    return segs[0];
+}
+
 """Block sanitizer (owner=code): precise mechanical rewrites of known-safe model
 tics — a stray `;` before the body brace, and the reports-append idiom, whose
 correct form (`report X;`) is a 1:1 transform under the walker contract."""
@@ -1262,7 +1301,7 @@ def fill_impl_blocks(
         block_ok = False;
         for attempt in range(3) {
             ctx = base_ctx + (("\n\n--- YOUR PREVIOUS ATTEMPT FAILED ---\n" + feedback) if feedback else "");
-            block = sanitize_block(strip_fences(fill_impl(s, ctx)));
+            block = sanitize_block(keep_requested_block(strip_fences(fill_impl(s, ctx)), s));
             lint = antipattern_lint(block);
             if not lint.ok { feedback = lint.errors; continue; }
             if dry or (not project_dir) { block_ok = True; break; }
@@ -1377,6 +1416,7 @@ walker build_backend {
     can begin with Root entry {
         self.log.append("plan");
         self.plan = plan_build(self.task, BACKEND_DECL_GUIDE);
+        normalize_plan(self.plan);
         _trace({"station": "plan", "kind": "slot", "slot": "plan_build",
                 "input": {"task": self.task}, "output": _plan_dict(self.plan)});
         s1 = here ++> ScaffoldSt();
@@ -1628,6 +1668,7 @@ walker add_endpoint {
             disengage;
         }
         self.new_ep = plan_add(self.task, render_decls(self.skeleton));
+        self.new_ep.example_json = _normalize_example(self.new_ep.example_json);
         _trace({"station": "plan-add", "kind": "slot", "slot": "plan_add",
                 "input": {"task": self.task},
                 "output": {"name": self.new_ep.name, "example_json": self.new_ep.example_json}});

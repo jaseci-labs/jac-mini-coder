@@ -704,6 +704,7 @@ walker build_fullstack {
         minicoder.IMPL_FILE = "endpoints.sv.impl.jac";
         minicoder.ENTRY_FILE = "main.jac";
         self.plan = minicoder.plan_build(self.task, minicoder.BACKEND_DECL_GUIDE);
+        minicoder.normalize_plan(self.plan);
         minicoder._trace({"station": "plan", "kind": "slot", "slot": "plan_build",
                          "input": {"task": self.task}, "output": minicoder._plan_dict(self.plan)});
         self.ai_mode = wants_ai(self.task);
