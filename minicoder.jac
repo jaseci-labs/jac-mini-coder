@@ -94,7 +94,7 @@ obj EndpointSpec {
     has example_json: str = "{}";
 }
 sem EndpointSpec = "One REST endpoint the backend must expose, with a runnable example call. Endpoints are exercised live IN ORDER, so put write endpoints before the read endpoints that verify them.";
-sem EndpointSpec.name = "The walker:pub name, e.g. 'create_note'.";
+sem EndpointSpec.name = "The walker:pub endpoint name, in the USER'S OWN domain vocabulary (verb_noun, snake_case) — derived from their request, never copied from an example.";
 sem EndpointSpec.example_json = "A JSON object string with realistic values for every required walker field, e.g. '{\"title\": \"groceries\", \"body\": \"milk\"}'. Used to smoke-test the live endpoint.";
 
 
@@ -2096,6 +2096,11 @@ glob BACKEND_DECL_GUIDE: str =
 "  main.sv.jac — ALL declarations: docstring, node/edge archetypes, walker:pub endpoints, def signatures.\n"
 "(Walkers MUST live in main.sv.jac itself — walkers imported from another module are NOT served.\n"
 " Do NOT write any impl file — stub bodies are generated automatically from your signatures.)\n"
+"\n"
+"The example below is SYNTAX ONLY. `Note`/`create_note`/`list_notes` are placeholders —\n"
+"name every node, walker and field after the USER'S OWN domain (a tweet app declares\n"
+"`node Tweet` and `walker:pub post_tweet`, NOT `Note`/`create_note`). Copying these\n"
+"placeholder names is the single most common mistake.\n"
 "\n"
 "main.sv.jac (DECLARATIONS ONLY — no statement bodies):\n"
 "  node Note { has title: str; has body: str = \"\"; }    # typed has, defaults; NEVER `T | None` on a node — use \"\"/0 sentinel\n"
