@@ -102,6 +102,16 @@ def plan_fields(plan: minicoder.BuildPlan) -> list[str] {
     return out;
 }
 
+"""Fields the USER types. Under auth the identity field is filled from the
+session, so it must not appear as an input the user can spoof — but it stays on
+the card so you can still see who posted."""
+def form_fields(plan: minicoder.BuildPlan, auth: bool) -> list[str] {
+    fs = plan_fields(plan);
+    if not auth { return fs; }
+    kept = [f for f in fs if not minicoder.is_identity_field(f)];
+    return kept if kept else fs;
+}
+
 def write_walker_name(plan: minicoder.BuildPlan) -> str {
     for e in plan.endpoints {
         if not minicoder._is_read_endpoint(e.name) { return e.name; }
@@ -181,6 +191,7 @@ def css_one_line(css: str) -> str {
 
 def render_frontend_cl(plan: minicoder.BuildPlan, copy: UiCopy, auth: bool = False, nt: str = "", ai: bool = False) -> str {
     fields = plan_fields(plan);
+    ffields = form_fields(plan, auth);
     node_t = nt if nt else minicoder._derive_node_name(plan);
     wname = write_walker_name(plan);
     lname = list_walker_name(plan);
@@ -207,7 +218,7 @@ def render_frontend_cl(plan: minicoder.BuildPlan, copy: UiCopy, auth: bool = Fal
         L.append("    has password: str = " + q + q + ";");
         L.append("    has auth_msg: str = " + q + q + ";");
     }
-    for f in fields { L.append("    has " + f + ": str = " + q + q + ";"); }
+    for f in ffields { L.append("    has " + f + ": str = " + q + q + ";"); }
     if ai {
         L.append("    has ai_q: str = " + q + q + ";");
         L.append("    has ai_a: str = " + q + q + ";");
@@ -262,7 +273,7 @@ def render_frontend_cl(plan: minicoder.BuildPlan, copy: UiCopy, auth: bool = Fal
     }
     if wname {
     L.append("        <form className=" + q + "entry-form" + q + " onSubmit={submitItem}>");
-    for f in fields {
+    for f in ffields {
         ph = f[0].upper() + f[1:];
         L.append("            <input id=" + q + "f-" + f + q + " type=" + q + "text" + q + " value={" + f + "}");
         L.append("                onChange={lambda (e: ChangeEvent) { " + f + " = e.target.value; }}");
@@ -303,7 +314,7 @@ def render_frontend_cl(plan: minicoder.BuildPlan, copy: UiCopy, auth: bool = Fal
 }
 
 def render_frontend_impl(plan: minicoder.BuildPlan, auth: bool = False, nt: str = "", ai: bool = False) -> str {
-    fields = plan_fields(plan);
+    fields = form_fields(plan, auth);
     wname = write_walker_name(plan);
     lname = list_walker_name(plan);
     q = DQ;
@@ -605,7 +616,9 @@ appears in the page, then screenshot the populated page for the vision judge."""
 def gate_ui(project_dir: str, plan: minicoder.BuildPlan, shot_path: str, dry: bool, auth: bool = False, ai: bool = False) -> minicoder.CheckResult {
     if dry { return minicoder.CheckResult(ok=True, errors=""); }
     base = "http://localhost:" + str(minicoder.SERVE_PORT);
-    fields = plan_fields(plan);
+    # only the inputs the user can actually type — under auth the identity field
+    # is session-supplied and has no form input to fill (or to assert on)
+    fields = form_fields(plan, auth);
     wname = write_walker_name(plan);
     example: dict = {};
     for e in plan.endpoints {

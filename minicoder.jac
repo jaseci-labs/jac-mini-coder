@@ -967,6 +967,18 @@ def unify_node_refs(sk: Skeleton) {
     }
 }
 
+# fields that name WHO acted. In an authenticated app these must come from the
+# session, never from the request body — otherwise any user can type someone
+# else's handle and post as them.
+glob IDENTITY_FIELDS: list[str] = ["user_id", "userid", "author_id", "authorid", "author",
+                                   "username", "owner", "poster", "created_by", "user"];
+# a stable, unforgeable per-user handle derived from the caller's own root
+glob SESSION_AUTHOR: str = "(\"u_\" + jid(root)[:8])";
+
+def is_identity_field(f: str) -> bool {
+    return f.lower() in IDENTITY_FIELDS;
+}
+
 glob AI_TWIN_WORDS: list[str] = ["assistant", "chatbot", "chat", "answer", "inquire", "query"];
 
 """Remove model-authored 'assistant'-style walkers (ask_assistant, chat_bot,
@@ -1315,7 +1327,13 @@ def block_template(sig: str, decl_src: str) -> str {
         }
         if node_fields { fields = [f for f in fields if f in node_fields]; }
         if fields {
-            args = ", ".join([f + "=self." + f for f in fields]);
+            # authenticated app → the author is taken from the session
+            argl: list[str] = [];
+            for f in fields {
+                if ACCESS and is_identity_field(f) { argl.append(f + "=" + SESSION_AUTHOR); }
+                else { argl.append(f + "=self." + f); }
+            }
+            args = ", ".join(argl);
             acc2 = _acc(wname);
             guard = "";
             if acc2 == "admin" {
