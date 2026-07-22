@@ -4,7 +4,7 @@ Each grid cell is one pixel; render() folds two pixel rows into one terminal
 row using ▀/▄ with truecolor fg/bg, returned as rich Text so rich can
 downgrade colors on terminals without 24-bit support.
 
-    head_lines()      24x18 throwing ninja (9 terminal rows)
+    head_lines()      28x18 masked ninja, katana on the back (9 rows)
     face_lines()      12x12 avatar (6 rows)
     micro_lines()     8x6 inline face (3 rows)
     wordmark_lines()  block-letter JAC in jaseci orange
@@ -27,26 +27,27 @@ glob PALETTE: dict[str, str] = {
 # stars is what makes it unmistakably a ninja. Each grid is 24x18 pixels =
 # 24 terminal columns by 9 rows once the half-block fold halves the height.
 
-# a — mid-throw, star leaving the hand (default)
+# a — the mascot: hood, tied headband with the jaseci emblem, swoosh eyes,
+# katana strapped across the back (default)
 glob NINJA_A: list[str] = [
-    "........................",
-    "..KKKKKK............O.o.",
-    "..KKKKKK...........OOO..",
-    "..OOOOOO........O...O...",
-    "..KSSSSK.......OOO......",
-    "..KBSSBK.....KK.O.......",
-    "..KKKKKK....KK..........",
-    "...KKKK....KK...........",
-    "..KKKKKKKKKK............",
-    "..KKKKKKKK..............",
-    ".OOOOOOOOO..............",
-    ".KKKKKKKKK..............",
-    ".KKKKKKKKK..............",
-    "..KKK..KKK..............",
-    "..KKK..KKK..............",
-    ".KKKK..KKKK.............",
-    "........................",
-    "........................"
+    "..........KKKKKKKK.......oo.",
+    "........KKKKKKKKKKKK....KK..",
+    ".......KKKKKKKKKKKKKK..oo...",
+    "......KKKKKKKKKKKKKKKKKK....",
+    "......KKKKKKKKKKKKKKKK......",
+    "..OO.OOOOOOOOWWOOOOOOOK.....",
+    ".OOOOOOOOOOOOWWOOOOOOO......",
+    "..oo..OOOOOOOOOOOOOOOO......",
+    ".OO...KSSSSSSSSSSSSSSK......",
+    "OO....KSBBSSSSSSSSBBSK......",
+    "......KSBBBBSSSSBBBBSK......",
+    "......KSSBBBBSSBBBBSSK......",
+    "......KSSSSSSSSSSSSSSK......",
+    ".....KKKKKKKKKKKKKKKKK......",
+    "....KK.KKKKKKKKKKKKKK.......",
+    "...KK...KKKKKKKKKKKK........",
+    ".oKK...OOOOOOOOOOOOOO.......",
+    "oKK......OOOOOOOOOO........."
 ];
 
 # b — level throw, stars receding
@@ -93,9 +94,33 @@ glob NINJA_C: list[str] = [
     "........................"
 ];
 
-glob HEAD_VARIANTS: dict[str, list[str]] = {"a": NINJA_A, "b": NINJA_B, "c": NINJA_C};
+# d — the original hand-drawn head (yours), kept as-is
+glob NINJA_D: list[str] = [
+    "......KKKKKKKK......",
+    "....KKKKKKKKKKKK....",
+    "...KKKKKKKKKKKKKK...",
+    "..KKKKKKKKKKKKKKKK..",
+    "..KKKKKKKKKKKKKKKK..",
+    "OoooOOOOOWWOOOOOOOO.",
+    "OOOOOOOOOWWOOOOOOOO.",
+    ".oOOOOOOOOOOOOOOOOO.",
+    ".oKSSSSSSSSSSSSSSK..",
+    "..KSSKKSSSSSSKKSSK..",
+    "..KSWWWKSSSSKWWWSK..",
+    "..KSWBWSSSSSSWBWSK..",
+    "..KSWWWSSSSSSWWWSK..",
+    "..KKSSSSSSSSSSSSKK..",
+    "...KKKKKKKKKKKKKK...",
+    "....KKKKKKKKKKKK....",
+    "...OOOOOOOOOOOOOO...",
+    ".....OOOOOOOOOO....."
+];
 
-# JACMINI_MASCOT=a|b|c picks the head; preview them with `jac run mascot.jac`
+glob HEAD_VARIANTS: dict[str, list[str]] = {
+    "a": NINJA_A, "b": NINJA_B, "c": NINJA_C, "d": NINJA_D
+};
+
+# JACMINI_MASCOT=a|b|c|d picks the figure; preview with `jac run mascot.jac`
 glob HEAD: list[str] = HEAD_VARIANTS.get(
     os.environ.get("JACMINI_MASCOT", "a").strip().lower(), NINJA_A);
 
@@ -103,11 +128,11 @@ glob FACE: list[str] = [
     "...KKKKKK...",
     "..KKKKKKKK..",
     ".KKKKKKKKKK.",
-    ".OOOOOOOOOO.",
-    ".KKKKKKKKKK.",
+    "OOOOOOOOOOO.",
+    "oKKKKKKKKKK.",
     ".KSSSSSSSSK.",
-    ".KSBSSSSBSK.",
-    ".KSSSSSSSSK.",
+    ".KSBBSSBBSK.",
+    ".KSSBSSBSSK.",
     ".KKKKKKKKKK.",
     "..KKKKKKKK..",
     "...OOOOOO...",
@@ -181,19 +206,28 @@ def wordmark_lines -> list[Text] {
 """`jac run mascot.jac` — compare the heads side by side and pick one.
 
 Colour art cannot be judged from source, so this renders every variant in the
-terminal it will actually live in. Choose with JACMINI_MASCOT=a|b|c.
+terminal it will actually live in. Choose with JACMINI_MASCOT=a|b|c|d.
 """
 with entry:__main__ {
     import from rich.console { Console }
     con = Console();
-    keys = ["a", "b", "c"];
-    labels = ["a  mid-throw (default)", "b  level throw", "c  overhead throw"];
+    keys = ["a", "b", "c", "d"];
+    labels = ["a  ninja + katana (default)", "b  level throw", "c  overhead throw",
+              "d  original head"];
     cols: list[list[Text]] = [];
     for k in keys { cols.append(render(HEAD_VARIANTS[k])); }
     con.print("");
-    for r in range(len(cols[0])) {
+    # variants differ in width AND height (the original head is 20 wide, the
+    # throwing figures 24), so pad every column to the tallest and widest
+    tall = max([len(c) for c in cols]);
+    con.print("");
+    for r in range(tall) {
         line = Text("  ");
-        for c in cols { line.append_text(c[r]); line.append("     "); }
+        for (ci, c) in enumerate(cols) {
+            w = len(HEAD_VARIANTS[keys[ci]][0]);
+            if r < len(c) { line.append_text(c[r]); } else { line.append(" " * w); }
+            line.append("  ");
+        }
         con.print(line);
     }
     hdr = Text("  ");
