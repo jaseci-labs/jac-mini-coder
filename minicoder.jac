@@ -979,6 +979,33 @@ def is_identity_field(f: str) -> bool {
     return f.lower() in IDENTITY_FIELDS;
 }
 
+"""Drop `def name(...);` signatures declared INSIDE a walker/node/edge body.
+
+A walker's contract here is its abilities (`can X with Y entry`) — those are what
+the stub synthesiser fills and the templates implement. A model that also writes
+`def execute(content: str): Tweet;` inside the walker creates an impl obligation
+nothing will ever satisfy, and IMPL-COMPLETENESS then fails every round with
+'these declared signatures have NO impl body'. Module-level def signatures are
+left alone; only archetype-scoped ones are removed."""
+def strip_archetype_defs(src: str) -> str {
+    out: list[str] = [];
+    depth = 0;
+    in_arch = False;
+    for line in src.split("\n") {
+        t = line.strip();
+        opens = re.match(r"^(walker|node|edge|obj)(:\w+)?\s+\w+", t);
+        if opens and ("{" in t) { in_arch = True; depth = 0; }
+        if in_arch {
+            depth += line.count("{") - line.count("}");
+            drop = re.match(r"^def\s+\w+\s*\(", t) is not None and t.endswith(";");
+            if depth <= 0 { in_arch = False; }
+            if drop { continue; }
+        }
+        out.append(line);
+    }
+    return "\n".join(out);
+}
+
 glob AI_TWIN_WORDS: list[str] = ["assistant", "chatbot", "chat", "answer", "inquire", "query"];
 
 """Remove model-authored 'assistant'-style walkers (ask_assistant, chat_bot,
@@ -1027,6 +1054,8 @@ def force_stub_file(sk: Skeleton, plan: BuildPlan) {
         # `edge Rel Wrote { ... }` — two identifiers is not a declaration a weak
         # model can recover from; keep the first name so the block parses
         d.source = re.sub(r"(?m)^(\s*edge\s+\w+)\s+\w+(\s*\{)", r"\1\2", d.source);
+        d.source = strip_archetype_defs(d.source);
+        d.source = re.sub(r"=\s*null\s*;", "= None;", d.source);
     }
     # the contract is TWO files — drop any hallucinated extras before they can
     # fail a gate (models occasionally invent main.impl.jac / helper files).
