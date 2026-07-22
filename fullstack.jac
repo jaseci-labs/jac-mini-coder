@@ -574,6 +574,26 @@ def gate_mu(project_dir: str, plan: minicoder.BuildPlan, access: dict[str, str],
 
 # ---- the click-through browser gate (owner=code) ---------------------------
 
+"""Wait until the served app actually answers. A fullstack `jac start` builds the
+client bundle before serving — on a modest box that is ~35s, far past the fixed
+sleeps this used to do. Opening the browser early meant the signup silently
+no-op'd against a dead page and the later submit had no session: the gate then
+blamed the app for a 'broken write/read loop' that was never broken."""
+def _wait_server(port: int, timeout_s: int = 180) -> bool {
+    base = "http://localhost:" + str(port) + "/";
+    waited = 0;
+    while waited < timeout_s {
+        try {
+            r = subprocess.run(["curl", "-s", "-o", "/dev/null", "-w", "%{http_code}", base],
+                               capture_output=True, text=True, timeout=10);
+            if (r.stdout or "").strip().startswith("2") { time.sleep(3); return True; }
+        } except Exception {}
+        time.sleep(3);
+        waited += 3;
+    }
+    return False;
+}
+
 def _browse(args: list[str], cwd: str) -> str {
     r = subprocess.run([JAC, "browse"] + args, cwd=cwd, capture_output=True, text=True, timeout=120);
     return (r.stdout or "") + (r.stderr or "");
@@ -916,7 +936,7 @@ walker build_fullstack {
             srv = subprocess.Popen([JAC, "start", "main.jac", "--port", str(minicoder.SERVE_PORT)],
                                    cwd=self.project_dir, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL);
             try {
-                time.sleep(8);
+                _wait_server(minicoder.SERVE_PORT);
                 ui = gate_ui(self.project_dir, self.plan, shot, self.dry_run, self.auth_mode, self.ai_mode);
                 minicoder._trace({"station": "verify", "kind": "gate", "gate": "ui", "round": 0,
                                  "gate_ok": ui.ok, "gate_errors": ui.errors[:2000]});
@@ -956,7 +976,7 @@ walker build_fullstack {
                                     time.sleep(1);
                                     srv = subprocess.Popen([JAC, "start", "main.jac", "--port", str(minicoder.SERVE_PORT)],
                                                            cwd=self.project_dir, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL);
-                                    time.sleep(12);
+                                    _wait_server(minicoder.SERVE_PORT);
                                     ui2 = gate_ui(self.project_dir, self.plan, shot, self.dry_run);
                                     minicoder._trace({"station": "verify", "kind": "gate", "gate": "ui", "round": 1,
                                                      "gate_ok": ui2.ok, "gate_errors": ui2.errors[:1000]});
