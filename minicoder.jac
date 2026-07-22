@@ -1303,6 +1303,17 @@ def block_template(sig: str, decl_src: str) -> str {
                 if str(h.group(1)) not in fields { fields.append(str(h.group(1))); }
             }
         }
+        # only pass fields the NODE actually declares: a walker often carries
+        # extras (new_tweet_id, user_id, ...) that the node has no parameter for
+        # → E1052 'named argument does not match any parameter', from OUR template
+        node_fields: list[str] = [];
+        mnode = re.search(r"(?m)^\s*node\s+" + nt + r"\s*\{([\s\S]*?)\}", decl_src);
+        if mnode {
+            for hm in re.findall(r"\bhas\s+(\w+)\s*:", str(mnode.group(1))) {
+                node_fields.append(str(hm));
+            }
+        }
+        if node_fields { fields = [f for f in fields if f in node_fields]; }
         if fields {
             args = ", ".join([f + "=self." + f for f in fields]);
             acc2 = _acc(wname);
