@@ -17,8 +17,19 @@ jobs:
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
       - name: project deps
         run: jac install || true
+      # Must match ci.yml: checking a subset is how a deleted `sync_frontend`
+      # with three live call sites reached main. A release must not be cuttable
+      # from a tree that NameErrors on its first build.
       - name: jac check
-        run: jac check main.jac minicoder.jac cli.jac gen_pairs.jac
+        run: jac check main.jac minicoder.jac fullstack.jac agent.jac byllm_patch.jac cli.jac gen_pairs.jac repro_gate.jac
+      - name: no undefined names
+        run: |
+          jac check main.jac minicoder.jac fullstack.jac agent.jac byllm_patch.jac cli.jac gen_pairs.jac repro_gate.jac 2>&1 | tee /tmp/check.txt
+          if grep -q "W2001" /tmp/check.txt; then
+            echo "::error::undefined name(s) — a call site lost its definition"
+            grep "W2001" /tmp/check.txt | sort -u
+            exit 1
+          fi
       - name: shell scripts parse
         run: bash -n install.sh && bash -n box_init.sh
 
