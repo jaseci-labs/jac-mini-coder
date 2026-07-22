@@ -618,8 +618,20 @@ def gate_ui(project_dir: str, plan: minicoder.BuildPlan, shot_path: str, dry: bo
             _browse(["fill", "#f-" + f, val], project_dir);
         }
         _browse(["click", "#f-submit"], project_dir);
-        time.sleep(1.5);
-        snap = _browse(["snapshot"], project_dir);
+        # POLL for the written value instead of a fixed sleep: the submit does a
+        # real walker spawn + re-render, which takes seconds on a modest box. A
+        # 1.5s sleep raced the round-trip and failed apps that genuinely work
+        # (verified by hand: the item rendered at ~8s). Fast setups still exit
+        # on the first hit.
+        probe0 = str(example.get(fields[0], "")) if fields else "";
+        snap = "";
+        tries0 = 0;
+        while tries0 < 20 {
+            time.sleep(2);
+            snap = _browse(["snapshot"], project_dir);
+            if (not probe0) or (probe0 in snap) { break; }
+            tries0 += 1;
+        }
         if ai {
             _browse(["fill", "#ai-question", "Summarize what I have so far."], project_dir);
             _browse(["click", "#ai-ask"], project_dir);
