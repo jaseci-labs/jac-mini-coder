@@ -1127,11 +1127,12 @@ def force_stub_file(sk: Skeleton, plan: BuildPlan) {
     # constructors (templates fill only their own walker's fields) always compile
     for d in sk.decls {
         if ".impl." in d.path { continue; }
-        d.source = re.sub(r"(?m)^(\s*has\s+\w+\s*:\s*str)\s*;", r"\1 = \"\";", d.source);
-        d.source = re.sub(r"(?m)^(\s*has\s+\w+\s*:\s*int)\s*;", r"\1 = 0;", d.source);
-        d.source = re.sub(r"(?m)^(\s*has\s+\w+\s*:\s*float)\s*;", r"\1 = 0.0;", d.source);
-        d.source = re.sub(r"(?m)^(\s*has\s+\w+\s*:\s*bool)\s*;", r"\1 = False;", d.source);
-        d.source = re.sub(r"(?m)^(\s*has\s+\w+\s*:\s*list\[[^\]]+\])\s*;", r"\1 = [];", d.source);
+        dq = chr(34);
+        d.source = re.sub(r"\b(has\s+\w+\s*:\s*str)\s*;", "\\1 = " + dq + dq + ";", d.source);
+        d.source = re.sub(r"\b(has\s+\w+\s*:\s*int)\s*;", r"\1 = 0;", d.source);
+        d.source = re.sub(r"\b(has\s+\w+\s*:\s*float)\s*;", r"\1 = 0.0;", d.source);
+        d.source = re.sub(r"\b(has\s+\w+\s*:\s*bool)\s*;", r"\1 = False;", d.source);
+        d.source = re.sub(r"\b(has\s+\w+\s*:\s*list\[[^\]]+\])\s*;", r"\1 = [];", d.source);
     }
     stub_src = synth_stub_impls(sk);
     sk.decls = [d for d in sk.decls if d.path != IMPL_FILE];
