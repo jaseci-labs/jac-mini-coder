@@ -80,9 +80,23 @@ def load_conf -> dict[str, str] {
 def save_conf(conf: dict[str, str]) {
     try {
         os.makedirs(os.path.dirname(CONF_PATH), exist_ok=True);
-        with open(CONF_PATH, "w") as f { json.dump(conf, f, indent=1); }
+        data: dict[str, any] = dict(conf);
+        # the model-first (autonomy) preference travels with the config
+        data["model_first"] = minicoder.MODEL_FIRST;
+        with open(CONF_PATH, "w") as f { json.dump(data, f, indent=1); }
         os.chmod(CONF_PATH, 384);  # 0o600 — the file may hold an API key
     } except Exception {}
+}
+
+"""Re-write the config with the current autonomy state (read-modify-write so
+model/key/base are preserved). Keeps a /autonomy toggle or the non-gemma prompt
+sticky across sessions."""
+def persist_model_first(on: bool) {
+    minicoder.MODEL_FIRST = on;
+    c = load_conf();
+    keep: dict[str, str] = {};
+    for k in ["model", "api_key", "http_base", "api_base"] { keep[k] = str(c.get(k, "")); }
+    save_conf(keep);
 }
 
 
@@ -365,6 +379,36 @@ def run_task(task: str, work_dir: str) {
 }
 
 
+"""The two models the template-first harness is calibrated and proven on."""
+def is_gemma_e(spec: str) -> bool {
+    n = spec.split("/")[-1].lower();
+    return n in ["gemma4:e4b", "gemma4:e2b"];
+}
+
+"""On switching to any model other than gemma4:e4b / e2b, flag that template-first
+is tuned for those two and offer model-first (autonomy). A more capable model is
+otherwise held back — the code templates clobber its richer-but-valid choices.
+Only prompts when autonomy is currently off and not in http-adapter mode."""
+def flag_non_gemma(spec: str, http_base: str) {
+    if http_base or (not spec) or is_gemma_e(spec) { return; }
+    if minicoder.MODEL_FIRST {
+        console.print("[dim]autonomy is on — model-first suits this model[/dim]");
+        return;
+    }
+    console.print("[yellow]heads-up[/yellow] [dim]— the harness's template-first defaults are tuned for gemma4:e4b / e2b.[/dim]");
+    console.print("[dim]On a more capable model the code templates can hold it back (they overwrite its richer choices). Model-first mode lets the model write each block, keeping it only when it compiles, with the template as fallback.[/dim]");
+    ans = "";
+    try { ans = input("  turn on model-first (autonomy) for this model? [y/N] > ").strip().lower(); }
+    except (EOFError, KeyboardInterrupt) {}
+    if ans in ["y", "yes"] {
+        persist_model_first(True);
+        console.print("[dim]autonomy [green]on[/green][/dim]");
+    } else {
+        console.print("[dim]left off — [orange3]/autonomy[/orange3] to turn it on anytime[/dim]");
+    }
+}
+
+
 def mode_label(spec: str, http_base: str, api_key: str, api_base: str = "") -> str {
     if http_base { return "http:" + http_base; }
     if api_key {
@@ -409,6 +453,13 @@ with entry {
     api_key = os.environ.get("JACMINI_API_KEY", "") or str(conf.get("api_key", ""));
     http_base = os.environ.get("JACMINI_HTTP_BASE", os.environ.get("SMITH_HTTP_BASE", "")) or str(conf.get("http_base", ""));
     api_base = os.environ.get("JACMINI_API_BASE", "") or str(conf.get("api_base", ""));
+    # autonomy preference: env wins, else the saved config (set by the installer
+    # for hosted models, or by a prior /autonomy toggle)
+    if os.environ.get("JACMINI_MODEL_FIRST", "") == "1" {
+        minicoder.MODEL_FIRST = True;
+    } elif str(conf.get("model_first", "")).lower() in ["true", "1"] {
+        minicoder.MODEL_FIRST = True;
+    }
 
     first_run = (not model_spec) and (not http_base);
     # ninja head beside the welcome text, claude-code style
@@ -447,6 +498,7 @@ with entry {
         console.print(f"  [dim]model:[/dim] {mode_label(model_spec, http_base, api_key, api_base)}");
     }
     configure_model(model_spec, http_base, api_key, api_base);
+    if first_run { flag_non_gemma(model_spec, http_base); }
     minicoder.TRACE_HOOK = render_event;
 
     console.print("[dim]  type a task · /model to switch model · /help for all commands · /quit to exit[/dim]");
@@ -460,7 +512,16 @@ with entry {
             break;
         }
         if line == "/help" {
-            console.print("[dim]/model or /config (model config screen) · /model <spec> · /api <spec|preset> [key] [base-url] · /http <base> · /dir <path> · /update · /quit — anything else is a task[/dim]");
+            console.print("[dim]/model or /config (model config screen) · /model <spec> · /api <spec|preset> [key] [base-url] · /http <base> · /dir <path> · /autonomy · /update · /quit — anything else is a task[/dim]");
+            continue;
+        }
+        if line in ("/autonomy", "/modelfirst") {
+            persist_model_first(not minicoder.MODEL_FIRST);
+            if minicoder.MODEL_FIRST {
+                console.print("[dim]autonomy [green]on[/green] — model-first: the model writes each block; the template is the fallback when it fails the gate (better for capable models, slower)[/dim]");
+            } else {
+                console.print("[dim]autonomy [orange3]off[/orange3] — template-first: standard blocks are code-authored (default; best for small local models)[/dim]");
+            }
             continue;
         }
         if line in ("/model", "/config") {
@@ -474,6 +535,7 @@ with entry {
                 persist_key = "" if str(picked.get("key_from_env", "")) else api_key;
                 save_conf({"model": model_spec, "api_key": persist_key, "http_base": "", "api_base": api_base});
                 console.print(f"[dim]model → {mode_label(model_spec, http_base, api_key, api_base)}[/dim]");
+                flag_non_gemma(model_spec, http_base);
             } else {
                 console.print("[dim]unchanged[/dim]");
             }
@@ -488,6 +550,7 @@ with entry {
             configure_model(model_spec, http_base, api_key, api_base);
             save_conf({"model": model_spec, "api_key": "", "http_base": "", "api_base": ""});
             console.print(f"[dim]model → {model_spec}[/dim]");
+            flag_non_gemma(model_spec, http_base);
             continue;
         }
         if line.startswith("/api ") {
@@ -532,6 +595,7 @@ with entry {
             configure_model(model_spec, http_base, api_key, api_base);
             save_conf({"model": model_spec, "api_key": api_key, "http_base": "", "api_base": api_base});
             console.print(f"[dim]model → {mode_label(model_spec, http_base, api_key, api_base)}[/dim]");
+            flag_non_gemma(model_spec, http_base);
             continue;
         }
         if line.startswith("/http ") {

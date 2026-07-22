@@ -1,26 +1,34 @@
 #!/bin/bash
-# jac-mini-coder installer — everything you need to write Jac with a local model.
+# jac-mini-coder installer — everything you need to write Jac with your own model.
 #
 #   curl -fsSL https://raw.githubusercontent.com/jaseci-labs/jac-mini-coder/main/install.sh | bash
 #
 # What it does (idempotent — safe to re-run):
 #   1. native `jac` binary            (jaseci install script)  → ~/.local/bin/jac
-#   2. ollama                         (linux: official script · macOS: brew)
-#   3. the model                      (default gemma4:e4b, ~10 GB — JAC_MINI_MODEL overrides)
+#   2. asks: local ollama, or a hosted API (Z.ai coding plan / any litellm spec)
+#   3. LOCAL only: ollama + the model  (default gemma4:e4b, ~10 GB)
 #   4. jac-mini-coder source          → ~/.jac-mini-coder     (JAC_MINI_HOME overrides)
 #   5. project deps (`jac install`) + a `jac-mini-coder` launcher on ~/.local/bin
+#   6. saves your model choice         → ~/.jac-mini-coder/config.json (chmod 600)
+#
+# Non-interactive (piped with no terminal, CI): defaults to local ollama + gemma4:e4b.
+# Override the local model with JAC_MINI_MODEL=<name>.
 #
 # Then just run:  jac-mini-coder
 set -euo pipefail
 
 MODEL="${JAC_MINI_MODEL:-gemma4:e4b}"
 DIR="${JAC_MINI_HOME:-$HOME/.jac-mini-coder}"
+CONF="$HOME/.jac-mini-coder/config.json"
 REPO="jaseci-labs/jac-mini-coder"
 BIN="$HOME/.local/bin"
 export PATH="$BIN:$PATH"
 
 say()  { printf '\033[1m⚒ %s\033[0m\n' "$*"; }
 die()  { printf '\033[31m✖ %s\033[0m\n' "$*" >&2; exit 1; }
+# read from the terminal even when the script is piped from curl | bash
+ask()  { local a=""; if [ -r /dev/tty ]; then read -r -p "$1" a </dev/tty || true; fi; printf '%s' "$a"; }
+asks() { local a=""; if [ -r /dev/tty ]; then read -r -s -p "$1" a </dev/tty || true; echo >/dev/tty; fi; printf '%s' "$a"; }
 
 OS="$(uname -s)"
 
@@ -33,28 +41,60 @@ else
   jac --version | head -1
 fi
 
-say "ollama"
-if ! command -v ollama >/dev/null 2>&1; then
-  case "$OS" in
-    Linux)  curl -fsSL https://ollama.com/install.sh | sh ;;
-    Darwin) if command -v brew >/dev/null 2>&1; then brew install ollama
-            else die "install ollama first: https://ollama.com/download (or install homebrew)"; fi ;;
-    *)      die "unsupported OS: $OS — install ollama manually: https://ollama.com/download" ;;
+# ── choose model / provider ──────────────────────────────────────────────────
+# Defaults (local ollama) are used when there is no terminal to prompt on.
+MODE="local"; C_MODEL="ollama_chat/$MODEL"; C_KEY=""; C_BASE=""; C_MF="false"
+if [ -r /dev/tty ]; then
+  say "choose your model"
+  printf '  \033[1m1)\033[0m Local ollama   — free, private; downloads %s (~10 GB)  [default]\n' "$MODEL"
+  printf '  \033[1m2)\033[0m Z.ai Coding Plan — subscription key; glm-4.7 / glm-5.1 / …\n'
+  printf '  \033[1m3)\033[0m Other hosted API — any litellm provider/model + key\n'
+  CH="$(ask '  1/2/3 [1] > ')"; CH="${CH:-1}"
+  case "$CH" in
+    2) MODE="hosted"
+       GLM="$(ask '  GLM model [glm-4.7] > ')"; GLM="${GLM:-glm-4.7}"
+       C_KEY="$(asks '  Z.ai plan API key (hidden) > ')"
+       C_MODEL="openai/$GLM"; C_BASE="https://api.z.ai/api/coding/paas/v4"; C_MF="true"
+       [ -n "$C_KEY" ] || die "no key entered — re-run and paste your Z.ai plan key" ;;
+    3) MODE="hosted"
+       printf '  litellm spec examples: openai/gpt-5.2-mini · anthropic/claude-haiku-4-5 · gemini/gemini-2.5-flash · groq/… · zai/glm-4.7\n'
+       SP="$(ask '  litellm spec (provider/model) > ')"
+       [ -n "$SP" ] || die "no spec entered"
+       case "$SP" in */*) ;; *) die "spec needs a provider prefix, e.g. openai/gpt-5.2-mini";; esac
+       C_KEY="$(asks '  API key (hidden; blank if already in your env) > ')"
+       BU="$(ask '  base URL override [blank = provider default] > ')"
+       C_MODEL="$SP"; C_BASE="$BU"; C_MF="true" ;;
+    *) MODE="local" ;;
   esac
 fi
-# make sure the daemon answers (linux installer starts a service; elsewhere, start one)
-if ! ollama list >/dev/null 2>&1; then
-  say "starting ollama daemon"
-  (nohup ollama serve >/dev/null 2>&1 &) ; sleep 3
-  ollama list >/dev/null 2>&1 || die "ollama daemon did not come up — start it manually: ollama serve"
-fi
-echo "ollama ready"
 
-say "model: $MODEL"
-if ollama list | awk '{print $1}' | grep -qx "$MODEL"; then
-  echo "already pulled"
+if [ "$MODE" = "local" ]; then
+  say "ollama"
+  if ! command -v ollama >/dev/null 2>&1; then
+    case "$OS" in
+      Linux)  curl -fsSL https://ollama.com/install.sh | sh ;;
+      Darwin) if command -v brew >/dev/null 2>&1; then brew install ollama
+              else die "install ollama first: https://ollama.com/download (or install homebrew)"; fi ;;
+      *)      die "unsupported OS: $OS — install ollama manually: https://ollama.com/download" ;;
+    esac
+  fi
+  # make sure the daemon answers (linux installer starts a service; elsewhere, start one)
+  if ! ollama list >/dev/null 2>&1; then
+    say "starting ollama daemon"
+    (nohup ollama serve >/dev/null 2>&1 &) ; sleep 3
+    ollama list >/dev/null 2>&1 || die "ollama daemon did not come up — start it manually: ollama serve"
+  fi
+  echo "ollama ready"
+
+  say "model: $MODEL"
+  if ollama list | awk '{print $1}' | grep -qx "$MODEL"; then
+    echo "already pulled"
+  else
+    ollama pull "$MODEL"
+  fi
 else
-  ollama pull "$MODEL"
+  say "hosted model: $C_MODEL"
+  echo "skipping ollama + local model download — your model runs in the cloud"
 fi
 
 say "jac-mini-coder source → $DIR"
@@ -90,6 +130,23 @@ say "project dependencies"
 ( cd "$DIR" && jac install ) || true   # deps may already be satisfied by the runtime closure
 ( cd "$DIR" && jac check main.jac >/dev/null 2>&1 ) || die "sanity check failed in $DIR"
 
+# ── save the model choice so the TUI starts ready (no first-run prompt) ───────
+say "saving model choice → $CONF"
+mkdir -p "$HOME/.jac-mini-coder"
+# JSON-escape the two free-text fields (key, base URL) just in case
+esc() { printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'; }
+cat > "$CONF" <<JSON
+{
+ "model": "$(esc "$C_MODEL")",
+ "api_key": "$(esc "$C_KEY")",
+ "http_base": "",
+ "api_base": "$(esc "$C_BASE")",
+ "model_first": $C_MF
+}
+JSON
+chmod 600 "$CONF"
+[ "$MODE" = "hosted" ] && echo "model-first (autonomy) on — capable models write each block; templates are the fallback"
+
 say "launcher"
 mkdir -p "$BIN"
 cat > "$BIN/jac-mini-coder" <<LAUNCH
@@ -106,5 +163,5 @@ say "done"
 echo
 echo "  run:            jac-mini-coder"
 echo "  pick workspace: jac-mini-coder ./myproject"
-echo "  other models:   JAC_MINI_MODEL=qwen3:8b (re-run installer) or /model in the TUI"
+echo "  change model:   /model in the TUI  ·  autonomy: /autonomy"
 case ":$PATH:" in *":$BIN:"*) ;; *) echo "  NOTE: add ~/.local/bin to your PATH";; esac

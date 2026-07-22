@@ -34,6 +34,17 @@ glob ACCESS: dict[str, str] = {};
 # in the user's own graph data), an env-aware Model glob, and byllm config.
 glob AI_MODE: bool = False;
 
+# Model-first mode (optional, off by default). Template-first is the default:
+# standard blocks are code-authored and the model rarely writes impl — ideal for
+# weak models that stay inside the lines. When a CAPABLE model is driving, that
+# clobbers its richer-but-valid choices (e.g. a list[str] field the model typed
+# more precisely). Model-first flips the order PER BLOCK: try the model's own
+# block, keep it if the assembled file micro-compiles, otherwise fall back to the
+# code template. The gate is the arbiter — valid-richer output survives, broken
+# output gets reconciled. Slower (a model call + micro-compile per templated
+# block), so it is opt-in via JACMINI_MODEL_FIRST=1 or the TUI /autonomy toggle.
+glob MODEL_FIRST: bool = os.environ.get("JACMINI_MODEL_FIRST", "") == "1";
+
 def _acc(name: str) -> str {
     return ACCESS.get(name, "pub") if ACCESS else "pub";
 }
@@ -861,6 +872,39 @@ def ensure_decl_completeness(sk: Skeleton, plan: BuildPlan) {
     }
 }
 
+glob AI_TWIN_WORDS: list[str] = ["assistant", "chatbot", "chat", "answer", "inquire", "query"];
+
+"""Remove model-authored 'assistant'-style walkers (ask_assistant, chat_bot,
+answer_question, ...) that duplicate the harness-owned ask_ai. ask_ai itself is
+never matched. Balanced-brace removal so the whole block goes."""
+def _strip_ai_twin_walkers(src: str) -> str {
+    out = src;
+    guard = 0;
+    while guard < 12 {
+        guard += 1;
+        hit = None;
+        for wm in re.finditer(r"walker(?::\w+)?\s+(\w+)\s*\{", out) {
+            nm = str(wm.group(1));
+            low = nm.lower();
+            if nm == "ask_ai" { continue; }
+            is_twin = low.startswith("ask") or low.startswith("assistant")
+                or any([w in low for w in AI_TWIN_WORDS]);
+            if is_twin { hit = wm; break; }
+        }
+        if hit is None { break; }
+        # walk balanced braces from the block's opening {
+        depth = 1;
+        i = hit.end();
+        while i < len(out) and depth > 0 {
+            if out[i] == "{" { depth += 1; }
+            elif out[i] == "}" { depth -= 1; }
+            i += 1;
+        }
+        out = out[:hit.start()] + out[i:];
+    }
+    return re.sub(r"\n{3,}", "\n\n", out);
+}
+
 """Force the mechanical scaffold invariants onto a model-authored Skeleton:
 the stub impl file is code-synthesized (replacing whatever the model emitted at
 that path) and impl_targets is code-derived — the model cannot drop either."""
@@ -926,6 +970,12 @@ def force_stub_file(sk: Skeleton, plan: BuildPlan) {
         # The decl only carries two grammar-clean lines: the import + the walker.
         for d in sk.decls {
             if ".impl." in d.path { continue; }
+            # a capable model may author its OWN assistant walker (ask_assistant,
+            # chat, answer_question, ...) that duplicates — and often mis-calls —
+            # the harness-provided ask_ai. That is broken divergence: the harness
+            # owns the AI endpoint, so drop the model's twin before it can fail a
+            # gate. (ask_ai itself is preserved.)
+            d.source = _strip_ai_twin_walkers(d.source);
             if "import from ai {" not in d.source {
                 d.source = "import from ai { ai_answer }\n\n" + d.source.lstrip();
             }
@@ -1190,9 +1240,12 @@ def fill_impl_blocks(
     for s in sigs {
         k = block_key(s);
         if k not in targets { continue; }
-        # 1 · template-first: standard shapes are code-authored — infallible
+        # 1 · template: standard shapes are code-authored. In the default
+        #     (template-first) mode an available template is infallible and the
+        #     model never runs. In MODEL_FIRST mode the template is kept as a
+        #     fallback and the model gets first shot below.
         tpl = block_template(s, frozen);
-        if tpl {
+        if tpl and (not MODEL_FIRST) {
             _trace({"station": station, "kind": "slot", "slot": "template", "round": round_n,
                     "input": {"file": st.file, "signatures": s}, "output": tpl});
             out[k] = tpl;
@@ -1206,19 +1259,29 @@ def fill_impl_blocks(
         if out.get(k, "") { base_ctx = base_ctx + "\n\n--- CURRENT BLOCK (rewrite it corrected) ---\n" + out[k]; }
         feedback = "";
         block = "";
+        block_ok = False;
         for attempt in range(3) {
             ctx = base_ctx + (("\n\n--- YOUR PREVIOUS ATTEMPT FAILED ---\n" + feedback) if feedback else "");
             block = sanitize_block(strip_fences(fill_impl(s, ctx)));
             lint = antipattern_lint(block);
             if not lint.ok { feedback = lint.errors; continue; }
-            if dry or (not project_dir) { break; }
+            if dry or (not project_dir) { block_ok = True; break; }
             cand = dict(out);
             cand[k] = block;
             cfile = merge_impl_blocks(existing, cand) if existing else assemble_impl(st, cand);
             _write(project_dir, st.file, cfile);
             mc = gate_check(project_dir, dry);
-            if mc.ok { break; }
+            if mc.ok { block_ok = True; break; }
             feedback = scope_errors(mc.errors, k);
+        }
+        # MODEL_FIRST fallback: the model's block never passed the gate, but a
+        # code template exists — take it (the gate is the arbiter; the model's
+        # magic only survives when it actually compiles+verifies).
+        if (not block_ok) and tpl {
+            _trace({"station": station, "kind": "slot", "slot": "template_fallback", "round": round_n,
+                    "input": {"file": st.file, "signatures": s}, "output": tpl});
+            out[k] = tpl;
+            continue;
         }
         # monotonic acceptance: never replace a previously-accepted block with
         # one that still fails after all samples

@@ -625,10 +625,13 @@ def gate_ui(project_dir: str, plan: minicoder.BuildPlan, shot_path: str, dry: bo
             _browse(["click", "#ai-ask"], project_dir);
             # a real answer renders with the template's "AI: " prefix — poll
             # for that marker; the Thinking… placeholder and the no-reports
-            # fallback both fail the gate
+            # fallback both fail the gate. The window is generous: a reasoning
+            # model (GLM-5, o-series) spends a hidden thinking pass before the
+            # answer, so a single grounded ai_answer can take a minute-plus —
+            # a fast local model still breaks early on the first hit.
             answered = False;
             tries = 0;
-            while tries < 15 {
+            while tries < 60 {
                 time.sleep(4);
                 s2 = _browse(["snapshot"], project_dir);
                 if "AI:" in s2 { answered = True; break; }
@@ -638,7 +641,7 @@ def gate_ui(project_dir: str, plan: minicoder.BuildPlan, shot_path: str, dry: bo
             if not answered {
                 _browse(["close"], project_dir);
                 return minicoder.CheckResult(ok=False,
-                    errors="UI: asked the AI but no real answer rendered within 60s.");
+                    errors="UI: asked the AI but no real answer rendered within 240s.");
             }
         }
         _browse(["screenshot", shot_path], project_dir);
