@@ -37,6 +37,51 @@ glob STYLE_JUDGMENT: str =
 
 glob ACCENTS: list[str] = ["#4f46e5", "#0e7490", "#b45309", "#be185d", "#15803d"];
 
+# ── jac-shadcn styling ───────────────────────────────────────────────────────
+# The shadcn path replaces the hand-rolled stylesheet entirely: the look comes
+# from the project's [jac-shadcn] theme + Tailwind semantic classes, and the
+# primitives (Button/Card/Input) are installed, never hand-written. The model
+# only picks from CLOSED SETS here — far safer for a small model than inventing
+# hex colours, and every value is validated against the list below.
+glob SHADCN_THEMES: list[str] = ["neutral", "stone", "zinc", "gray", "amber", "orange",
+    "yellow", "lime", "green", "emerald", "teal", "cyan", "sky", "blue", "indigo",
+    "violet", "purple", "fuchsia", "pink", "rose", "red"];
+glob SHADCN_BASES: list[str] = ["neutral", "stone", "zinc", "gray"];
+glob SHADCN_FONTS: list[str] = ["figtree", "inter", "geist", "geist-mono", "roboto",
+    "raleway", "dm-sans", "public-sans", "outfit", "noto-sans", "nunito-sans", "jetbrains-mono"];
+glob SHADCN_RADII: list[str] = ["default", "none", "small", "medium", "large"];
+
+obj ShadcnStyle {
+    has theme: str = "indigo";
+    has baseColor: str = "neutral";
+    has font: str = "inter";
+    has radius: str = "default";
+}
+sem ShadcnStyle = "The visual identity, chosen from fixed option lists.";
+sem ShadcnStyle.theme = "Accent colour name. One of: neutral, stone, zinc, gray, amber, orange, yellow, lime, green, emerald, teal, cyan, sky, blue, indigo, violet, purple, fuchsia, pink, rose, red. If the request names a known product, pick the accent closest to that product's brand colour (e.g. a Twitter/X clone -> sky or blue).";
+sem ShadcnStyle.baseColor = "Neutral/gray temperature. One of: neutral, stone, zinc, gray.";
+sem ShadcnStyle.font = "Typeface. One of: figtree, inter, geist, geist-mono, roboto, raleway, dm-sans, public-sans, outfit, noto-sans, nunito-sans, jetbrains-mono.";
+sem ShadcnStyle.radius = "Corner roundness. One of: default, none, small, medium, large.";
+
+def pick_shadcn_style(brief: str, guide: str) -> ShadcnStyle by llm(temperature=0.2);
+sem pick_shadcn_style = "Choose the visual identity for this app from the allowed option lists. Match a well-known product's look when the request references one.";
+sem pick_shadcn_style.brief = "What the app is, plus any visual direction the user gave.";
+sem pick_shadcn_style.guide = "The design standards.";
+
+"""Anything off-list falls back — an invalid flag makes `jac create` fail."""
+def sanitize_shadcn_style(st: ShadcnStyle) -> ShadcnStyle {
+    d = ShadcnStyle();
+    if str(st.theme).lower() not in SHADCN_THEMES { st.theme = d.theme; }
+    if str(st.baseColor).lower() not in SHADCN_BASES { st.baseColor = d.baseColor; }
+    if str(st.font).lower() not in SHADCN_FONTS { st.font = d.font; }
+    if str(st.radius).lower() not in SHADCN_RADII { st.radius = d.radius; }
+    st.theme = str(st.theme).lower();
+    st.baseColor = str(st.baseColor).lower();
+    st.font = str(st.font).lower();
+    st.radius = str(st.radius).lower();
+    return st;
+}
+
 obj ThemeTokens {
     has bg: str = "#f7f7f5";
     has card: str = "#ffffff";
@@ -356,6 +401,160 @@ def render_frontend_cl(plan: minicoder.BuildPlan, copy: UiCopy, auth: bool = Fal
     return NL.join(L) + NL;
 }
 
+"""The shadcn page: composes installed primitives with Tailwind semantic classes.
+No stylesheet is emitted — the look comes from the project's [jac-shadcn] theme.
+Handler names match render_frontend_impl exactly so the annex is unchanged."""
+def render_shadcn_page(plan: minicoder.BuildPlan, copy: UiCopy, auth: bool = False,
+                       nt: str = "", ai: bool = False) -> str {
+    fields = plan_fields(plan);
+    ffields = form_fields(plan, auth);
+    node_t = nt if nt else minicoder._derive_node_name(plan);
+    wname = write_walker_name(plan);
+    lname = list_walker_name(plan);
+    q = DQ;
+    L: list[str] = [];
+    L.append(q + q + q + copy.title + " — client UI." + q + q + q);
+    L.append("");
+    L.append("import from " + q + ".components.ui.button" + q + " { Button }");
+    L.append("import from " + q + ".components.ui.card" + q + " { Card, CardContent }");
+    L.append("import from " + q + ".components.ui.input" + q + " { Input }");
+    if auth {
+        L.append("import from " + q + "@jac/runtime" + q + " { jacLogin, jacSignup, jacLogout, jacIsLoggedIn }");
+    }
+    imports_line = node_t;
+    if wname { imports_line = imports_line + ", " + wname; }
+    if lname { imports_line = imports_line + ", " + lname; }
+    if ai { imports_line = imports_line + ", ask_ai"; }
+    L.append("sv import from endpoints { " + imports_line + " }");
+    L.append("");
+    L.append("def:pub app -> JsxElement {");
+    L.append("    has items: list[" + node_t + "] = [];");
+    if auth {
+        L.append("    has authed: bool = False;");
+        L.append("    has email: str = " + q + q + ";");
+        L.append("    has password: str = " + q + q + ";");
+        L.append("    has auth_msg: str = " + q + q + ";");
+    }
+    for f in ffields { L.append("    has " + f + ": str = " + q + q + ";"); }
+    if ai {
+        L.append("    has ai_q: str = " + q + q + ";");
+        L.append("    has ai_a: str = " + q + q + ";");
+    }
+    L.append("");
+    L.append("    can with entry {");
+    if auth {
+        L.append("        authed = jacIsLoggedIn();");
+        L.append("        if authed { loadItems(); }");
+    } else {
+        L.append("        loadItems();");
+    }
+    L.append("    }");
+    L.append("");
+    L.append("    async def loadItems -> None;");
+    if wname { L.append("    async def submitItem(e: FormEvent) -> None;"); }
+    if ai { L.append("    async def doAsk(e: FormEvent) -> None;"); }
+    if auth {
+        L.append("    async def doLogin(e: FormEvent) -> None;");
+        L.append("    async def doSignup -> None;");
+        L.append("    def doLogout(e: MouseEvent);");
+    }
+    L.append("");
+    L.append("    return <div className=" + q + "min-h-screen bg-background text-foreground" + q + ">");
+    L.append("      <div className=" + q + "mx-auto w-full max-w-2xl px-4 py-10 flex flex-col gap-6" + q + ">");
+    # header
+    L.append("        <header className=" + q + "flex items-start justify-between gap-4" + q + ">");
+    L.append("          <div className=" + q + "flex flex-col gap-1" + q + ">");
+    L.append("            <h1 className=" + q + "text-3xl font-bold tracking-tight" + q + ">" + copy.title + "</h1>");
+    L.append("            <p className=" + q + "text-sm text-muted-foreground" + q + ">" + copy.tagline + "</p>");
+    L.append("          </div>");
+    if auth {
+        L.append("          {if authed {");
+        L.append("            <Button variant=" + q + "outline" + q + " size=" + q + "sm" + q + " onClick={doLogout}>Log out</Button>");
+        L.append("          }}");
+    }
+    L.append("        </header>");
+    # auth card
+    if auth {
+        L.append("        {if not authed {");
+        L.append("          <Card>");
+        L.append("            <CardContent className=" + q + "pt-6" + q + ">");
+        L.append("              <form className=" + q + "flex flex-col gap-3" + q + " onSubmit={doLogin}>");
+        L.append("                <Input id=" + q + "a-email" + q + " type=" + q + "text" + q + " placeholder=" + q + "Email" + q + " value={email}");
+        L.append("                  onChange={lambda (e: ChangeEvent) { email = e.target.value; }} />");
+        L.append("                <Input id=" + q + "a-password" + q + " type=" + q + "password" + q + " placeholder=" + q + "Password" + q + " value={password}");
+        L.append("                  onChange={lambda (e: ChangeEvent) { password = e.target.value; }} />");
+        L.append("                <div className=" + q + "flex gap-2" + q + ">");
+        L.append("                  <Button id=" + q + "a-login" + q + " type=" + q + "submit" + q + " className=" + q + "flex-1" + q + ">Log in</Button>");
+        L.append("                  <Button id=" + q + "a-signup" + q + " type=" + q + "button" + q + " variant=" + q + "outline" + q + " className=" + q + "flex-1" + q + " onClick={doSignup}>Sign up</Button>");
+        L.append("                </div>");
+        L.append("                {if auth_msg {");
+        L.append("                  <p className=" + q + "text-sm text-destructive" + q + ">{auth_msg}</p>");
+        L.append("                }}");
+        L.append("              </form>");
+        L.append("            </CardContent>");
+        L.append("          </Card>");
+        L.append("        }}");
+        L.append("        {if authed {");
+    }
+    # composer
+    if wname and ffields {
+        L.append("        <Card>");
+        L.append("          <CardContent className=" + q + "pt-6" + q + ">");
+        L.append("            <form className=" + q + "flex flex-col gap-3 sm:flex-row sm:items-center" + q + " onSubmit={submitItem}>");
+        for f in ffields {
+            ph = f[0].upper() + f[1:].replace("_", " ");
+            L.append("              <Input id=" + q + "f-" + f + q + " type=" + q + "text" + q + " placeholder=" + q + ph + q + " value={" + f + "}");
+            L.append("                onChange={lambda (e: ChangeEvent) { " + f + " = e.target.value; }} className=" + q + "flex-1" + q + " />");
+        }
+        L.append("              <Button id=" + q + "f-submit" + q + " type=" + q + "submit" + q + ">" + copy.submit_label + "</Button>");
+        L.append("            </form>");
+        L.append("          </CardContent>");
+        L.append("        </Card>");
+    }
+    # timeline
+    L.append("        <section className=" + q + "flex flex-col gap-3" + q + ">");
+    L.append("          {if len(items) == 0 {");
+    L.append("            <div className=" + q + "rounded-lg border border-dashed border-border p-10 text-center text-sm text-muted-foreground" + q + ">");
+    L.append("              " + copy.empty_state);
+    L.append("            </div>");
+    L.append("            skip;");
+    L.append("          }}");
+    L.append("          {for (i, it) in enumerate(items) {");
+    L.append("            <Card key={str(i)}>");
+    L.append("              <CardContent className=" + q + "pt-6 flex flex-col gap-1" + q + ">");
+    if fields {
+        L.append("                <p className=" + q + "text-sm font-semibold" + q + ">{it." + fields[0] + "}</p>");
+        for f in fields[1:] {
+            L.append("                <p className=" + q + "text-sm text-muted-foreground" + q + ">{it." + f + "}</p>");
+        }
+    }
+    L.append("              </CardContent>");
+    L.append("            </Card>");
+    L.append("          }}");
+    L.append("        </section>");
+    # ask-AI
+    if ai {
+        L.append("        <Card>");
+        L.append("          <CardContent className=" + q + "pt-6 flex flex-col gap-3" + q + ">");
+        L.append("            <form className=" + q + "flex gap-2" + q + " onSubmit={doAsk}>");
+        L.append("              <Input id=" + q + "ai-question" + q + " type=" + q + "text" + q + " placeholder=" + q + "Ask AI about your data…" + q + " value={ai_q}");
+        L.append("                onChange={lambda (e: ChangeEvent) { ai_q = e.target.value; }} className=" + q + "flex-1" + q + " />");
+        L.append("              <Button id=" + q + "ai-ask" + q + " type=" + q + "submit" + q + " variant=" + q + "secondary" + q + ">Ask AI</Button>");
+        L.append("            </form>");
+        L.append("            {if ai_a {");
+        L.append("              <p id=" + q + "ai-answer" + q + " className=" + q + "text-sm text-muted-foreground whitespace-pre-wrap" + q + ">{ai_a}</p>");
+        L.append("            }}");
+        L.append("          </CardContent>");
+        L.append("        </Card>");
+    }
+    if auth { L.append("        }}"); }
+    L.append("      </div>");
+    L.append("    </div>;");
+    L.append("}");
+    return NL.join(L) + NL;
+}
+
+
 def render_frontend_impl(plan: minicoder.BuildPlan, auth: bool = False, nt: str = "", ai: bool = False) -> str {
     fields = form_fields(plan, auth);
     wname = write_walker_name(plan);
@@ -493,6 +692,13 @@ def render_ai_module -> str {
     return NL.join(L) + NL;
 }
 
+
+"""main.jac for a jac-shadcn project: server imports + the generated theme
+stylesheet + the client mount."""
+def render_shadcn_main(plan: minicoder.BuildPlan, copy: UiCopy, nt: str = "") -> str {
+    base = render_main_entry(plan, copy, nt);
+    return base.replace("cl {", "cl import " + DQ + ".styles.global.css" + DQ + ";\n\ncl {", 1);
+}
 
 def render_main_entry(plan: minicoder.BuildPlan, copy: UiCopy, nt: str = "") -> str {
     node_t = nt if nt else minicoder._derive_node_name(plan);
@@ -776,8 +982,8 @@ def sync_frontend(project_dir: str, plan: minicoder.BuildPlan, sk: minicoder.Ske
     }
     nt_real = minicoder._first_node_type(decl_src);
     if nt_real != "Root" {
-        minicoder._write(project_dir, "main.jac", render_main_entry(plan, copy, nt_real));
-        minicoder._write(project_dir, "frontend.cl.jac", render_frontend_cl(plan, copy, auth, nt_real, ai, theme));
+        minicoder._write(project_dir, "main.jac", render_shadcn_main(plan, copy, nt_real));
+        minicoder._write(project_dir, "frontend.cl.jac", render_shadcn_page(plan, copy, auth, nt_real, ai));
         minicoder._write(project_dir, "frontend.impl.jac", render_frontend_impl(plan, auth, nt_real, ai));
     }
 }
@@ -795,6 +1001,7 @@ walker build_fullstack {
     has auth_mode: bool = False;
     has ai_mode: bool = False;
     has theme: ThemeTokens = ThemeTokens();
+    has style: ShadcnStyle = ShadcnStyle();
     has access: dict[str, str] = {};
     has budget: int = 3;
     has dry_run: bool = False;
@@ -838,6 +1045,10 @@ walker build_fullstack {
         }
         brief = self.plan.summary + " Endpoints: " + ", ".join([e.name for e in self.plan.endpoints]);
         try {
+            self.style = sanitize_shadcn_style(pick_shadcn_style(self.task + " | " + brief, STYLE_JUDGMENT));
+            minicoder._trace({"station": "plan", "kind": "slot", "slot": "pick_shadcn_style",
+                              "output": {"theme": self.style.theme, "base": self.style.baseColor,
+                                         "font": self.style.font, "radius": self.style.radius}});
             self.theme = sanitize_theme(pick_theme(self.task + " | " + brief, STYLE_JUDGMENT));
             minicoder._trace({"station": "plan", "kind": "slot", "slot": "pick_theme",
                               "output": {"bg": self.theme.bg, "accent": self.theme.accent, "ink": self.theme.ink}});
@@ -882,20 +1093,28 @@ walker build_fullstack {
         self.log.append("scaffold");
         self.project_dir = os.path.join(self.work_dir, self.plan.name);
         if not self.dry_run {
-            r = subprocess.run([JAC, "create", self.plan.name, "--kind", "web-app", "--force"],
+            r = subprocess.run([JAC, "create", self.plan.name, "--use", "jac-shadcn", "--force",
+                                "--theme", self.style.theme, "--baseColor", self.style.baseColor,
+                                "--font", self.style.font, "--radius", self.style.radius],
                                cwd=self.work_dir, capture_output=True, text=True);
+            if r.returncode != 0 {
+                # fall back to the plain web-app template rather than fail the build
+                r = subprocess.run([JAC, "create", self.plan.name, "--kind", "web-app", "--force"],
+                                   cwd=self.work_dir, capture_output=True, text=True);
+            }
             if (r.returncode != 0) and (not os.path.isdir(self.project_dir)) {
                 self.outcome.append(minicoder.BuildResult(ok=False, stage="scaffold",
                     message=(r.stdout or "") + (r.stderr or ""), files=self.log));
                 disengage;
             }
+            subprocess.run([JAC, "install", "--shadcn", "input"],
+                           cwd=self.project_dir, capture_output=True, text=True);
             minicoder._write(self.project_dir, "plan.json",
                             json.dumps(minicoder._plan_dict(self.plan), indent=1));
-            minicoder._write(self.project_dir, "main.jac", render_main_entry(self.plan, self.copy));
-            minicoder._write(self.project_dir, "frontend.cl.jac", render_frontend_cl(self.plan, self.copy, self.auth_mode, "", self.ai_mode, self.theme));
+            minicoder._write(self.project_dir, "main.jac", render_shadcn_main(self.plan, self.copy));
+            minicoder._write(self.project_dir, "frontend.cl.jac",
+                            render_shadcn_page(self.plan, self.copy, self.auth_mode, "", self.ai_mode));
             minicoder._write(self.project_dir, "frontend.impl.jac", render_frontend_impl(self.plan, self.auth_mode, "", self.ai_mode));
-            minicoder._write(self.project_dir, "frontend.css",
-                            render_style_css(self.theme));
             if self.ai_mode {
                 minicoder._write(self.project_dir, "ai.jac", render_ai_module());
             }
@@ -1036,9 +1255,12 @@ walker build_fullstack {
                         minicoder._trace({"station": "verify", "kind": "slot", "slot": "judge_ui",
                                          "output": {"renders": verdict.renders, "quality": verdict.quality,
                                                     "issues": verdict.issues}});
-                        if verdict.issues and verdict.quality < 4 {
+                        css_path = os.path.join(self.project_dir, "frontend.css");
+                        # shadcn projects have no hand-rolled stylesheet — the look
+                        # comes from [jac-shadcn] + Tailwind tokens, so the CSS-rewrite
+                        # refine pass simply does not apply there
+                        if verdict.issues and verdict.quality < 4 and os.path.exists(css_path) {
                             self.log.append("restyle");
-                            css_path = os.path.join(self.project_dir, "frontend.css");
                             cur = open(css_path).read();
                             newcss = minicoder.strip_fences(restyle_css(
                                 cur, "\n".join(verdict.issues) + "\n\n" + STYLE_JUDGMENT));
