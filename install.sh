@@ -33,12 +33,24 @@ asks() { local a=""; if [ -r /dev/tty ]; then read -r -s -p "$1" a </dev/tty || 
 OS="$(uname -s)"
 
 say "jac binary"
-if command -v jac >/dev/null 2>&1; then
-  jac --version | head -1
+# minimum jac the current jac-mini-coder sources are known to check clean on.
+# An older jac already on PATH is upgraded (skipping this was the #1 fresh-machine
+# 'sanity check failed' cause — code written for a newer jac hits old syntax).
+MIN_JAC="0.34.0"
+ver_ok() {  # ver_ok CUR MIN  → 0 if CUR >= MIN
+  [ -n "$1" ] && [ "$(printf '%s\n%s\n' "$2" "$1" | sort -V | head -1)" = "$2" ]
+}
+CUR_JAC=""
+command -v jac >/dev/null 2>&1 && CUR_JAC="$(jac --version 2>/dev/null | sed -n 's/^jac \([0-9][0-9.]*\).*/\1/p')"
+if ver_ok "$CUR_JAC" "$MIN_JAC"; then
+  echo "jac $CUR_JAC"
 else
+  [ -n "$CUR_JAC" ] && echo "jac $CUR_JAC is older than $MIN_JAC — upgrading"
   curl -fsSL https://raw.githubusercontent.com/jaseci-labs/jaseci/main/scripts/install.sh | bash
   command -v jac >/dev/null 2>&1 || die "jac install failed — see https://www.jac-lang.org"
+  NEW_JAC="$(jac --version 2>/dev/null | sed -n 's/^jac \([0-9][0-9.]*\).*/\1/p')"
   jac --version | head -1
+  ver_ok "$NEW_JAC" "$MIN_JAC" || echo "  ⚠ jac $NEW_JAC is still below $MIN_JAC — the install may fail its sanity check"
 fi
 
 # ── choose model / provider ──────────────────────────────────────────────────
@@ -141,7 +153,12 @@ fi
 
 say "project dependencies"
 ( cd "$DIR" && jac install ) || true   # deps may already be satisfied by the runtime closure
-( cd "$DIR" && jac check main.jac >/dev/null 2>&1 ) || die "sanity check failed in $DIR"
+if ! CK="$( cd "$DIR" && jac check main.jac 2>&1 )"; then
+  printf '\033[31m%s\033[0m\n' "$CK" | tail -25 >&2
+  echo >&2
+  printf 'jac version: %s\n' "$(jac --version 2>&1 | head -1)" >&2
+  die "sanity check failed in $DIR (errors above). This is usually a jac version mismatch — please share the errors + 'jac --version' at https://github.com/$REPO/issues"
+fi
 
 # ── save the model choice so the TUI starts ready (no first-run prompt) ───────
 say "saving model choice → $CONF"
