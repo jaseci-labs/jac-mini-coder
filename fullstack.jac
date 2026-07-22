@@ -705,6 +705,16 @@ walker build_fullstack {
         minicoder.ENTRY_FILE = "main.jac";
         self.plan = minicoder.plan_build(self.task, minicoder.BACKEND_DECL_GUIDE);
         minicoder.normalize_plan(self.plan);
+        drift = minicoder.plan_fidelity(self.task, self.plan);
+        if drift {
+            minicoder._trace({"station": "plan", "kind": "slot", "slot": "plan_drift", "output": drift});
+            try {
+                self.plan = minicoder.plan_build(self.task + "\n\nIMPORTANT: name the endpoints after "
+                    + "THIS request's own domain (its nouns and verbs). Do NOT reuse example names "
+                    + "like create_note/list_notes.", minicoder.BACKEND_DECL_GUIDE);
+                minicoder.normalize_plan(self.plan);
+            } except Exception {}
+        }
         minicoder._trace({"station": "plan", "kind": "slot", "slot": "plan_build",
                          "input": {"task": self.task}, "output": minicoder._plan_dict(self.plan)});
         self.ai_mode = wants_ai(self.task);

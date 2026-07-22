@@ -193,6 +193,42 @@ def _normalize_example(js: str) -> str {
     return "{}";
 }
 
+glob PLAN_STOPWORDS: list[str] = [
+    "build", "make", "create", "with", "that", "this", "using", "app", "application",
+    "web", "site", "website", "nice", "clean", "simple", "full", "stack", "fullstack",
+    "backend", "frontend", "api", "endpoint", "endpoints", "page", "user", "users",
+    "multi", "login", "account", "accounts", "data", "system", "clone", "and", "for",
+    "the", "from", "into", "each", "every", "show", "shows", "list", "lists", "add",
+    "adds", "get", "gets", "set", "have", "has", "can", "should", "please", "want"
+];
+
+"""Did the model actually plan THIS task, or echo the guide's example?
+
+A weak model understands the request in its summary and then emits the few-shot
+example endpoints verbatim (asked for a Twitter clone → plans create_note /
+list_notes). Everything downstream then passes: it compiles, serves, round-trips
+and clicks through — a green build of the WRONG app. Structural gates can't see
+this, so check vocabulary: the task's own domain words should appear somewhere in
+the planned endpoint names. Returns "" when the plan looks on-domain."""
+def plan_fidelity(task: str, plan: BuildPlan) -> str {
+    words: list[str] = [];
+    for w in re.findall(r"[a-zA-Z_]{4,}", task.lower()) {
+        ww = str(w);
+        if ww not in PLAN_STOPWORDS and ww not in words { words.append(ww); }
+    }
+    if not words { return ""; }
+    # endpoint names ONLY — plan.name is derived from the task, so including it
+    # would always match and the check could never fire
+    names = " ".join([e.name.lower() for e in plan.endpoints]);
+    for w in words {
+        # singular/plural tolerance: 'tweets' in the task matches post_tweet
+        if (w in names) or (w.rstrip("s") in names) { return ""; }
+    }
+    return "the planned endpoints (" + ", ".join([e.name for e in plan.endpoints])
+        + ") do not mention anything from the request (" + ", ".join(words[:6])
+        + ") — the model most likely echoed the example instead of planning this task";
+}
+
 """Mechanical plan hygiene applied right after the model plans (owner=code)."""
 def normalize_plan(plan: BuildPlan) {
     for e in plan.endpoints {
@@ -1464,6 +1500,18 @@ walker build_backend {
         self.log.append("plan");
         self.plan = plan_build(self.task, BACKEND_DECL_GUIDE);
         normalize_plan(self.plan);
+        # off-domain plan (the model echoed the guide's example instead of
+        # planning THIS task) → one corrective re-plan before anything is built
+        drift = plan_fidelity(self.task, self.plan);
+        if drift {
+            _trace({"station": "plan", "kind": "slot", "slot": "plan_drift", "output": drift});
+            try {
+                self.plan = plan_build(self.task + "\n\nIMPORTANT: name the endpoints after THIS "
+                    + "request's own domain (its nouns and verbs). Do NOT reuse example names "
+                    + "like create_note/list_notes.", BACKEND_DECL_GUIDE);
+                normalize_plan(self.plan);
+            } except Exception {}
+        }
         _trace({"station": "plan", "kind": "slot", "slot": "plan_build",
                 "input": {"task": self.task}, "output": _plan_dict(self.plan)});
         s1 = here ++> ScaffoldSt();
