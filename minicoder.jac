@@ -94,7 +94,7 @@ obj EndpointSpec {
     has example_json: str = "{}";
 }
 sem EndpointSpec = "One REST endpoint the backend must expose, with a runnable example call. Endpoints are exercised live IN ORDER, so put write endpoints before the read endpoints that verify them.";
-sem EndpointSpec.name = "The walker:pub endpoint name, in the USER'S OWN domain vocabulary (verb_noun, snake_case) — derived from their request, never copied from an example.";
+sem EndpointSpec.name = "The endpoint name ALONE — a bare snake_case verb_noun identifier with no keywords, colons or punctuation. Use the USER'S OWN domain vocabulary, derived from their request, never copied from an example.";
 sem EndpointSpec.example_json = "A JSON object string with realistic values for every required walker field, e.g. '{\"title\": \"groceries\", \"body\": \"milk\"}'. Used to smoke-test the live endpoint.";
 
 
@@ -229,9 +229,21 @@ def plan_fidelity(task: str, plan: BuildPlan) -> str {
         + ") — the model most likely echoed the example instead of planning this task";
 }
 
+"""An endpoint name must be a bare identifier. A weak model echoes the
+declaration keyword into the value (`name = "walker:pub post_tweet"`), which
+renders as `walker walker:pub post_tweet {` — a syntax error that also breaks
+brace balance. Strip keywords/punctuation and keep the trailing identifier."""
+def _normalize_ep_name(name: str) -> str {
+    t: str = str(name).strip();
+    t = str(re.sub(r"^\s*(walker\s*:\s*\w+|walker|def\s*:\s*\w+|def|node|obj)\s+", "", t));
+    m = re.findall(r"[A-Za-z_]\w*", t);
+    return str(m[-1]) if m else t;
+}
+
 """Mechanical plan hygiene applied right after the model plans (owner=code)."""
 def normalize_plan(plan: BuildPlan) {
     for e in plan.endpoints {
+        e.name = _normalize_ep_name(e.name);
         e.example_json = _normalize_example(e.example_json);
     }
 }
