@@ -46,7 +46,7 @@ fi
 MODE="local"; C_MODEL="ollama_chat/$MODEL"; C_KEY=""; C_BASE=""; C_MF="false"
 if [ -r /dev/tty ]; then
   say "choose your model"
-  printf '  \033[1m1)\033[0m Local ollama   — free, private; downloads %s (~10 GB)  [default]\n' "$MODEL"
+  printf '  \033[1m1)\033[0m Local ollama   — free, private; the harness is tuned for gemma4  [default]\n'
   printf '  \033[1m2)\033[0m Z.ai Coding Plan — subscription key; glm-4.7 / glm-5.1 / …\n'
   printf '  \033[1m3)\033[0m Other hosted API — any litellm provider/model + key\n'
   CH="$(ask '  1/2/3 [1] > ')"; CH="${CH:-1}"
@@ -64,7 +64,20 @@ if [ -r /dev/tty ]; then
        C_KEY="$(asks '  API key (hidden; blank if already in your env) > ')"
        BU="$(ask '  base URL override [blank = provider default] > ')"
        C_MODEL="$SP"; C_BASE="$BU"; C_MF="true" ;;
-    *) MODE="local" ;;
+    *) MODE="local"
+       # the two models the template-first harness is calibrated on. Skip the
+       # sub-prompt if JAC_MINI_MODEL was set explicitly.
+       if [ -z "${JAC_MINI_MODEL:-}" ]; then
+         printf '  \033[1ma)\033[0m gemma4:e4b (~4B, ~10 GB) — stronger, recommended  [default]\n'
+         printf '  \033[1mb)\033[0m gemma4:e2b (~2B, ~7 GB)  — lighter, for smaller GPUs / laptops\n'
+         LM="$(ask '  a/b or any ollama model name [a] > ')"; LM="${LM:-a}"
+         case "$LM" in
+           a|A) MODEL="gemma4:e4b" ;;
+           b|B) MODEL="gemma4:e2b" ;;
+           *)   MODEL="$LM" ;;
+         esac
+         C_MODEL="ollama_chat/$MODEL"
+       fi ;;
   esac
 fi
 
