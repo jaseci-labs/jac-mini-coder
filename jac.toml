@@ -10,15 +10,20 @@ version = "0.1.0"
 description = "A Jac coding agent small enough for small models — compiled task-graphs, typed slots, code-owned gates"
 entry-point = "main.jac"
 
-# litellm is intentionally NOT listed here: it ships inside the jac runtime's
-# byLLM closure (byLLM can't run without it), and `pip install litellm` pulls
+# These pins mirror jac's built-in 'llm' capability (jaclang/project/
+# capabilities.jac) so `jac install` resolves to versions with prebuilt wheels.
+# litellm is REQUIRED at runtime (byLLM's LLM transport) and is NOT bundled in
+# the jac runtime — it must be installed here. But `litellm = "latest"` pulls
 # Rust-built deps (pydantic-core, tiktoken) that have no wheels on new Python
-# versions — the whole install then fails trying to build them via maturin.
-# httpx / rich / pillow are pure-Python/C with wheels and install cleanly.
+# (3.14) → pip tries to build them via maturin and the whole install fails.
+# The pinned older litellm (<=1.82.6) resolves to deps that DO ship wheels.
+# loguru is byLLM's logger; rich drives the TUI.
 [dependencies]
-httpx = "latest"
+litellm = ">=1.70.0,<=1.82.6"
+httpx = ">=0.27.0"
+loguru = ">=0.7.2,<0.8.0"
+pillow = ">=12.0.0,<13.0.0"
 rich = "latest"
-pillow = "latest"
 
 [plugins.byllm.model]
 default_model = "ollama_chat/gemma4:e4b"
