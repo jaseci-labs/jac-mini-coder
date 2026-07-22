@@ -376,6 +376,11 @@ def render_frontend_impl(plan: minicoder.BuildPlan, auth: bool = False, nt: str 
         L.append("    if result.reports and len(result.reports) > 0 {");
         L.append("        items = items + [result.reports[0]];");
         L.append("    }");
+        # write-then-REFETCH (the canonical Jac mutation handler). Appending the
+        # write's own report is not enough: on a shared/commons write the fresh
+        # node may not come back hydrated, and other users' rows are missing
+        # entirely — the row lands in the graph but the page never shows it.
+        if lname { L.append("    loadItems();"); }
         for f in fields { L.append("    " + f + " = " + q + q + ";"); }
         L.append("}");
     }
