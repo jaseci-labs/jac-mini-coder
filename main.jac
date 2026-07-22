@@ -42,6 +42,7 @@ import minicoder;
 import fullstack;
 import mascot;
 import byllm_patch;
+import agent;
 import from jaclang.byllm.lib { Model }
 import from rich.console { Console }
 import from rich.panel { Panel }
@@ -182,6 +183,7 @@ def configure_model(spec: str, http_base: str, api_key: str = "", api_base: str 
     } else { return; }
     minicoder.llm = m;
     fullstack.llm = m;
+    agent.llm = m;
 }
 
 
@@ -343,7 +345,7 @@ def pick_model -> dict[str, str] {
 }
 
 
-def run_task(task: str, work_dir: str) {
+def run_task(task: str, work_dir: str) -> minicoder.BuildResult {
     if not os.path.exists(work_dir) {
         os.makedirs(work_dir, exist_ok=True);
     }
@@ -380,11 +382,102 @@ def run_task(task: str, work_dir: str) {
             STATUS = None;
         }
     }
-    if res.ok {
-        console.print(f"[b]⏺[/b] [green bold]OK[/green bold] [dim]{res.message}[/dim]");
-    } else {
-        console.print(f"[b]⏺[/b] [red bold]FAILED[/red bold] at [red]{res.stage}[/red]");
-        console.print("  [dim]⎿  " + res.message.split("\n")[0][:400] + "[/dim]");
+    return res;
+}
+
+
+# plan.json is the durable contract written by EVERY build (backend or fullstack);
+# key project detection on it. Entry differs: fullstack serves main.jac, a
+# backend-only project serves its main.sv.jac.
+def _find_project(work_dir: str) -> str {
+    try {
+        for name in sorted(os.listdir(work_dir)) {
+            d = os.path.join(work_dir, name);
+            if os.path.isdir(d) and (os.path.exists(os.path.join(d, "plan.json"))
+                or os.path.exists(os.path.join(d, "main.jac"))
+                or os.path.exists(os.path.join(d, "main.sv.jac"))) {
+                return d;
+            }
+        }
+    } except Exception {}
+    return "";
+}
+
+def _entry_file(proj: str) -> str {
+    if os.path.exists(os.path.join(proj, "main.jac")) { return "main.jac"; }
+    if os.path.exists(os.path.join(proj, "main.sv.jac")) { return "main.sv.jac"; }
+    return "main.jac";
+}
+
+"""A short project summary for the agent: the built project's path, endpoints,
+and how to run it — so questions like 'how do I start it' are answered from fact."""
+def project_summary(work_dir: str) -> str {
+    proj = _find_project(work_dir);
+    if not proj { return "No project has been built yet in this workspace (" + work_dir + ")."; }
+    endpoints = "";
+    kind = "backend API";
+    pj = os.path.join(proj, "plan.json");
+    if os.path.exists(pj) {
+        try {
+            with open(pj) as f { pd = json.load(f); }
+            endpoints = ", ".join([str(e.get("name", "")) for e in pd.get("endpoints", [])]);
+        } except Exception {}
+    }
+    if os.path.exists(os.path.join(proj, "frontend.cl.jac")) { kind = "fullstack web app (backend + UI)"; }
+    return "Current project: " + os.path.basename(proj) + " (" + kind + ") at " + proj
+        + ". Endpoints: " + (endpoints if endpoints else "(see the code)")
+        + ". Run it from that directory with: jac start " + _entry_file(proj);
+}
+
+def run_hint(work_dir: str) -> str {
+    proj = _find_project(work_dir);
+    if not proj { return ""; }
+    return "cd " + proj + " && jac start " + _entry_file(proj);
+}
+
+"""Print a byLLM streaming generator token-by-token. Markup is disabled so a
+stray '[' in the text isn't eaten by rich. Falls back to a plain print if the
+transport didn't actually stream (returned a whole string)."""
+def stream_out(gen: any) -> str {
+    got = "";
+    try {
+        for tok in gen {
+            console.print(str(tok), end="", markup=False, highlight=False);
+            got = got + str(tok);
+        }
+    } except Exception {
+        if (not got) and isinstance(gen, str) { console.print(gen, markup=False); got = gen; }
+    }
+    console.print("");
+    return got;
+}
+
+"""The conversational turn: understand the message, then either answer it
+(streamed) or narrate + run the task-graph + wrap up (streamed)."""
+def handle_message(line: str, work_dir: str) {
+    if not os.path.exists(work_dir) { os.makedirs(work_dir, exist_ok=True); }
+    proj = project_summary(work_dir);
+    intent = agent.Intent();
+    with console.status("[orange3]✳[/orange3] [dim]thinking…[/dim]") as _st {
+        try { intent = agent.classify_intent(line, proj); } except Exception {}
+    }
+    if (not intent.kind) or (intent.kind == "chat") {
+        console.print("[orange3]⏺[/orange3] ", end="");
+        try { stream_out(agent.chat_reply(line, proj)); }
+        except Exception as e { console.print("[dim](couldn't answer — " + str(e)[:100] + ")[/dim]"); }
+        return;
+    }
+    if intent.blurb { console.print("[orange3]⏺[/orange3] " + intent.blurb); }
+    task = intent.task if intent.task else line;
+    res = run_task(task, work_dir);
+    outcome = ("succeeded: " + res.message) if res.ok
+        else ("FAILED at " + res.stage + " — " + res.message.split("\n")[0][:200]);
+    console.print("[orange3]⏺[/orange3] ", end="");
+    try { stream_out(agent.wrap_up(task, outcome, run_hint(work_dir))); }
+    except Exception {
+        # streaming wrap-up unavailable → fall back to a plain status line
+        if res.ok { console.print("[green]done.[/green] [dim]" + res.message + "[/dim]", markup=True); }
+        else { console.print("[red]" + outcome + "[/red]", markup=False); }
     }
 }
 
@@ -477,7 +570,7 @@ with entry {
     info: list[list[str]] = [];
     info.append(["", ""]);
     info.append(["⚒ Welcome to jac-mini-coder!", "bold orange3"]);
-    info.append(["write Jac with your own model — verified live", "dim"]);
+    info.append(["a conversational Jac coding agent — ask, build, iterate", "dim"]);
     info.append(["", ""]);
     if not first_run {
         info.append(["model:     " + mode_label(model_spec, http_base, api_key, api_base), "default"]);
@@ -511,7 +604,7 @@ with entry {
     if first_run { flag_non_gemma(model_spec, http_base); }
     minicoder.TRACE_HOOK = render_event;
 
-    console.print("[dim]  type a task · /model to switch model · /help for all commands · /quit to exit[/dim]");
+    console.print("[dim]  ask me anything, or tell me what to build · /model · /help · /quit[/dim]");
     console.print("");
 
     while True {
@@ -646,7 +739,7 @@ with entry {
         }
         console.print("");
         try {
-            run_task(line, work_dir);
+            handle_message(line, work_dir);
         } except KeyboardInterrupt {
             STATUS = None;
             console.print("[dim]— interrupted[/dim]");
