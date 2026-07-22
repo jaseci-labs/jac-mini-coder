@@ -120,6 +120,14 @@ def persist_model_first(on: bool) {
 }
 
 
+"""Shorten a path/spec to fit a column, keeping the tail — the end of a path or
+a model spec is the part that identifies it."""
+def _fit(s: str, w: int) -> str {
+    if w < 8 { return s; }
+    if len(s) <= w { return s; }
+    return "…" + s[len(s) - (w - 1):];
+}
+
 """Pick a meaningful line out of a gate's error dump — `jac check` leads with
 'Checking <file>...' headers and progress noise that say nothing to the user."""
 def _first_err(errs: str) -> str {
@@ -618,23 +626,47 @@ with entry {
     }
 
     first_run = (not model_spec) and (not http_base);
-    # ninja head beside the welcome text, claude-code style
-    art = mascot.head_lines();
+
+    # The banner is sized to the terminal. A fixed layout is wrong at both ends:
+    # at 60 columns the tagline wrapped and broke the art/text alignment, and on
+    # a 200-column terminal a hard-coded width leaves it marooned in the corner.
+    # So: the throwing ninja beside the text when there is room, the small face
+    # when there is not, and text alone on a genuinely narrow terminal.
+    term_w = 80;
+    try { term_w = int(console.size.width); } except Exception {}
+    inner = term_w - 4;                       # panel borders + padding
+
+    art: list[any] = [];
+    art_w = 0;
+    if inner >= len(mascot.HEAD[0]) + 40 {
+        art = mascot.head_lines(); art_w = len(mascot.HEAD[0]);
+    } elif inner >= len(mascot.FACE[0]) + 32 {
+        art = mascot.face_lines(); art_w = len(mascot.FACE[0]);
+    }
+    text_w = inner - art_w - 2;
+
+    tagline = "a conversational Jac coding agent — ask, build, iterate";
+    if len(tagline) > text_w { tagline = "a conversational Jac coding agent"; }
+    if len(tagline) > text_w { tagline = ""; }
+
     info: list[list[str]] = [];
     info.append(["", ""]);
     info.append(["⚒ Welcome to jac-mini-coder!", "bold orange3"]);
-    info.append(["a conversational Jac coding agent — ask, build, iterate", "dim"]);
+    if tagline { info.append([tagline, "dim"]); }
     info.append(["", ""]);
     if not first_run {
-        info.append(["model:     " + mode_label(model_spec, http_base, api_key, api_base), "default"]);
+        info.append(["model:     " + _fit(mode_label(model_spec, http_base, api_key, api_base), text_w - 11), "default"]);
     }
-    info.append(["workspace: " + work_dir.replace(os.path.expanduser("~"), "~"), "default"]);
+    info.append(["workspace: " + _fit(work_dir.replace(os.path.expanduser("~"), "~"), text_w - 11), "default"]);
+
     banner = Text();
     rows = max(len(art), len(info));
     for i in range(rows) {
-        if i < len(art) { banner.append_text(art[i]); }
-        else { banner.append(" " * len(mascot.HEAD[0])); }
-        banner.append("  ");
+        if art_w {
+            if i < len(art) { banner.append_text(art[i]); }
+            else { banner.append(" " * art_w); }
+            banner.append("  ");
+        }
         if (i < len(info)) and info[i][0] {
             banner.append(info[i][0], style=info[i][1]);
         }
@@ -657,7 +689,10 @@ with entry {
     if first_run { flag_non_gemma(model_spec, http_base); }
     minicoder.TRACE_HOOK = render_event;
 
-    console.print("[dim]  ask me anything, or tell me what to build · /model · /help · /quit[/dim]");
+    hint = "  ask me anything, or tell me what to build · /model · /help · /quit";
+    if len(hint) > term_w { hint = "  ask me anything or say what to build · /help · /quit"; }
+    if len(hint) > term_w { hint = "  /model · /help · /quit"; }
+    console.print("[dim]" + hint + "[/dim]");
     console.print("");
 
     while True {
