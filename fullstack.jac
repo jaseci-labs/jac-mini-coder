@@ -1042,6 +1042,26 @@ def gate_ui(project_dir: str, plan: minicoder.BuildPlan, shot_path: str, dry: bo
 }
 
 
+"""Re-render the frontend trio from the CURRENT decl before every decl gate:
+the project-wide `jac check` includes the frontend, and a frontend importing a
+node the model didn't name that round fails the check no matter how good the
+decl is (the e2b round-coupling failure)."""
+def sync_frontend(project_dir: str, plan: minicoder.BuildPlan, sk: minicoder.Skeleton,
+                  copy: UiCopy, auth: bool, ai: bool, dry: bool, theme: ThemeTokens = ThemeTokens()) {
+    if dry { return; }
+    decl_src = "";
+    for d in sk.decls {
+        if ".impl." not in d.path { decl_src = d.source; }
+    }
+    nt_real = minicoder._first_node_type(decl_src);
+    if nt_real != "Root" {
+        minicoder._write(project_dir, "main.jac", render_shadcn_main(plan, copy, nt_real));
+        minicoder._write(project_dir, "frontend.cl.jac", render_shadcn_page(plan, copy, auth, nt_real, ai));
+        minicoder._write(project_dir, "frontend.impl.jac", render_frontend_impl(plan, auth, nt_real, ai));
+    }
+}
+
+
 # ---- the build_fullstack task-graph ----------------------------------------
 
 walker build_fullstack {

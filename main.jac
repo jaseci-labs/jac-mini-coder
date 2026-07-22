@@ -38,6 +38,7 @@ import sys;
 import json;
 import getpass;
 import subprocess;
+import traceback;
 import minicoder;
 import fullstack;
 import mascot;
@@ -407,7 +408,12 @@ def run_task(task: str, work_dir: str) -> minicoder.BuildResult {
         } except Exception as e {
             # last-ditch net: any slot can still throw (a small model returning
             # invalid typed output, a transport hiccup). Show a clean, actionable
-            # line instead of a stack trace.
+            # line instead of a stack trace — unless JACMINI_DEBUG is set, in which
+            # case print the real traceback (the summary line alone is useless for
+            # diagnosing a harness bug).
+            if os.environ.get("JACMINI_DEBUG") {
+                console.print("[red]" + traceback.format_exc() + "[/red]");
+            }
             res = minicoder.BuildResult(ok=False, stage="error",
                 message="hit an unexpected error — often a small model returning invalid "
                     + "output for a task this complex. Try a stronger model with /model "

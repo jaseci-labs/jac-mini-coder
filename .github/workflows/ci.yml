@@ -16,6 +16,18 @@ jobs:
       - name: project deps
         run: jac install || true
       - name: jac check
-        run: jac check main.jac minicoder.jac cli.jac gen_pairs.jac
+        run: jac check main.jac minicoder.jac fullstack.jac agent.jac byllm_patch.jac cli.jac gen_pairs.jac
+      # W2001 ("Name X may be undefined") is only a warning and leaves `jac check`
+      # at exit 0 — but in this codebase every one of them is a call site whose
+      # def was renamed or deleted, i.e. a guaranteed NameError mid-build. A
+      # deleted `sync_frontend` shipped exactly this way and crashed every run.
+      - name: no undefined names
+        run: |
+          jac check main.jac minicoder.jac fullstack.jac agent.jac byllm_patch.jac cli.jac gen_pairs.jac 2>&1 | tee /tmp/check.txt
+          if grep -q "W2001" /tmp/check.txt; then
+            echo "::error::undefined name(s) — a call site lost its definition"
+            grep "W2001" /tmp/check.txt | sort -u
+            exit 1
+          fi
       - name: shell scripts parse
         run: bash -n install.sh && bash -n box_init.sh
