@@ -65,6 +65,24 @@ glob PRESETS: dict[str, dict[str, str]] = {
 # live spinner handle while a task runs (rich Status); events print above it
 glob STATUS: any = None;
 
+# plain-language names for what each slot/gate is actually doing — the progress
+# sub-lines should read like narration, not like internal slot identifiers
+glob SLOT_LABEL: dict[str, str] = {
+    "plan_build": "planning it out", "plan_add": "planning the change",
+    "author_decls": "designing the API surface", "repair_decls": "refining the declarations",
+    "mech_repair": "auto-fixing the declarations", "author_decl_update": "extending the API surface",
+    "fill_impl": "writing the logic", "template": "writing standard logic",
+    "template_fallback": "using a safe template", "repair_impl": "fixing the logic",
+    "style_copy": "choosing the look and wording", "judge_ui": "reviewing the design",
+    "restyle_css": "restyling", "access_map": "mapping user permissions",
+    "ai_mode": "adding the in-app assistant", "ai_endpoint_fold": "tidying the AI endpoint",
+    "sense": "reading the project", "repair_decls_error": "declaration repair failed"
+};
+glob GATE_LABEL: dict[str, str] = {
+    "build": "compiling", "runtime": "serving and testing it live",
+    "ui": "clicking through the UI", "check": "type-checking"
+};
+
 glob STATION_VERB: dict[str, str] = {
     "plan": "Planning", "scaffold": "Scaffolding", "declare": "Declaring",
     "implement": "Forging", "verify": "Verifying", "done": "Polishing",
@@ -101,7 +119,23 @@ def persist_model_first(on: bool) {
 }
 
 
-"""Claude-Code-style event lines: ⏺ action headers, ⎿ indented results."""
+"""Pick a meaningful line out of a gate's error dump — `jac check` leads with
+'Checking <file>...' headers and progress noise that say nothing to the user."""
+def _first_err(errs: str) -> str {
+    for ln in errs.split("\n") {
+        t = ln.strip();
+        if not t { continue; }
+        if t.startswith("Checking") or t.startswith("✔") or t.startswith("✖ Error:") { continue; }
+        if t.endswith("...") or t.startswith("=") or t.startswith("-") { continue; }
+        if ("error[" in t) or ("COMPLETENESS" in t) or ("IMPL-" in t) or ("MULTI-USER" in t)
+            or ("UI:" in t) or ("RUNTIME" in t) or ("Cannot" in t) or ("Expected" in t) {
+            return t[:80];
+        }
+    }
+    return "";
+}
+
+"""Build progress as dim sub-lines threaded under the current agent turn."""
 def render_event(rec: dict) {
     kind = str(rec.get("kind", ""));
     station = str(rec.get("station", ""));
@@ -113,31 +147,31 @@ def render_event(rec: dict) {
     if kind == "slot" {
         slot = str(rec.get("slot", ""));
         if slot == "template" {
-            console.print(f"[b]⏺[/b] template [dim]{str(rec.get('input', {}).get('signatures', ''))[:60]}[/dim]");
+            console.print("  [dim]│ writing standard logic[/dim]");
         } elif slot == "mech_repair" {
-            console.print("[b]⏺[/b] mechanical repair [dim](code-derived decl fix)[/dim]");
+            console.print("  [dim]│ auto-fixing the declarations[/dim]");
         } else {
             ok = rec.get("gate_ok", None);
-            console.print(f"[b]⏺[/b] {slot} [dim]({station})[/dim]");
-            if ok is not None {
-                if ok {
-                    console.print("  [dim]⎿[/dim]  [green]✓ passed[/green]");
-                } else {
-                    err = str(rec.get("gate_errors", "")).split("\n")[0][:90];
-                    console.print(f"  [dim]⎿[/dim]  [red]✗[/red] [dim]{err}[/dim]");
-                }
+            mark = "";
+            if ok is not None { mark = " [green]✓[/green]" if ok else " [red]✗[/red]"; }
+            label = SLOT_LABEL.get(slot, slot);
+            console.print(f"  [dim]│ {label}[/dim]{mark}");
+            if (ok is not None) and (not ok) {
+                err = _first_err(str(rec.get("gate_errors", "")));
+                if err { console.print(f"  [dim]│   {err}[/dim]"); }
             }
         }
     } elif kind == "gate" {
         gate = str(rec.get("gate", ""));
+        glabel = GATE_LABEL.get(gate, gate);
         if rec.get("gate_ok", False) {
-            console.print(f"  [dim]⎿[/dim]  [green]✓ {gate} gate[/green]");
+            console.print(f"  [dim]│[/dim] [green]✓[/green] [dim]{glabel}[/dim]");
         } else {
-            err = str(rec.get("gate_errors", "")).split("\n")[0][:90];
-            console.print(f"  [dim]⎿[/dim]  [red]✗ {gate} gate[/red] [dim]{err}[/dim]");
+            err = _first_err(str(rec.get("gate_errors", "")));
+            console.print(f"  [dim]│[/dim] [red]✗ {glabel}[/red] [dim]{err}[/dim]");
         }
     } elif kind == "run" {
-        console.print("  [dim]⎿[/dim]  [green bold]✓ done[/green bold]");
+        console.print("  [dim]│[/dim] [green]✓ done[/green]");
     }
 }
 
@@ -356,17 +390,17 @@ def run_task(task: str, work_dir: str) -> minicoder.BuildResult {
         try {
             if kind.startswith("fix_bug") {
                 proj = kind.split(":", 1)[1] if ":" in kind else work_dir;
-                console.print(f"[b]⏺[/b] route [dim]→[/dim] fix_bug [dim]@ {proj}[/dim]");
+                console.print(f"  [dim]│ route → fix_bug @ {proj}[/dim]");
                 res = minicoder.smith_fix(task, proj);
             } elif kind.startswith("add_endpoint") {
                 proj = kind.split(":", 1)[1] if ":" in kind else work_dir;
-                console.print(f"[b]⏺[/b] route [dim]→[/dim] add_endpoint [dim]@ {proj}[/dim]");
+                console.print(f"  [dim]│ route → add_endpoint @ {proj}[/dim]");
                 res = minicoder.smith_add(task, proj);
             } elif fullstack.wants_frontend(task) {
-                console.print("[b]⏺[/b] route [dim]→[/dim] build_fullstack [dim](backend + UI + browser gates)[/dim]");
+                console.print("  [dim]│ route → build_fullstack (backend + UI + browser gates)[/dim]");
                 res = fullstack.build_full(task, work_dir);
             } else {
-                console.print("[b]⏺[/b] route [dim]→[/dim] build_backend");
+                console.print(f"  [dim]│ route → build_backend[/dim]");
                 res = minicoder.smith(task, work_dir);
             }
         } except Exception as e {
@@ -462,17 +496,18 @@ def handle_message(line: str, work_dir: str) {
         try { intent = agent.classify_intent(line, proj); } except Exception {}
     }
     if (not intent.kind) or (intent.kind == "chat") {
-        console.print("[orange3]⏺[/orange3] ", end="");
+        agent_head();
         try { stream_out(agent.chat_reply(line, proj)); }
         except Exception as e { console.print("[dim](couldn't answer — " + str(e)[:100] + ")[/dim]"); }
         return;
     }
-    if intent.blurb { console.print("[orange3]⏺[/orange3] " + intent.blurb); }
+    agent_head();
+    console.print(intent.blurb if intent.blurb else "Working on it.", markup=False, highlight=False);
     task = intent.task if intent.task else line;
     res = run_task(task, work_dir);
     outcome = ("succeeded: " + res.message) if res.ok
         else ("FAILED at " + res.stage + " — " + res.message.split("\n")[0][:200]);
-    console.print("[orange3]⏺[/orange3] ", end="");
+    console.print("  ", end="");
     try { stream_out(agent.wrap_up(task, outcome, run_hint(work_dir))); }
     except Exception {
         # streaming wrap-up unavailable → fall back to a plain status line
@@ -522,19 +557,20 @@ def mode_label(spec: str, http_base: str, api_key: str, api_base: str = "") -> s
 }
 
 
-"""Claude-Code-style bordered prompt: open the box, read inside it, close it."""
+"""Chat-transcript prompt: the user's turn is the `›` line they type on, so the
+scrollback reads as a conversation rather than a stack of boxes."""
 def read_line -> str {
-    w = min(console.width, 100);
-    console.print("[dim]╭" + "─" * (w - 2) + "╮[/dim]");
-    try {
-        line = input("│ > ");
-    } except (EOFError, KeyboardInterrupt) {
-        print("");
-        console.print("[dim]╰" + "─" * (w - 2) + "╯[/dim]");
-        return "/quit";
-    }
-    console.print("[dim]╰" + "─" * (w - 2) + "╯[/dim]");
+    console.print("");
+    console.print("[bold cyan]›[/bold cyan] ", end="");
+    try { line = input(""); }
+    except (EOFError, KeyboardInterrupt) { print(""); return "/quit"; }
     return line.strip();
+}
+
+"""Open an agent turn: the ⚒ identity marker every reply threads under."""
+def agent_head() {
+    console.print("");
+    console.print("[bold orange3]⚒[/bold orange3] ", end="");
 }
 
 
