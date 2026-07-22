@@ -10,6 +10,7 @@ The `llm` here is the user's chosen model (main.jac binds agent.llm alongside th
 engine modules). Streaming falls back to a plain call if the transport can't stream.
 """
 
+import minicoder;
 import from jaclang.byllm.lib { Model }
 
 glob llm: Model = Model(model_name="ollama_chat/gemma4:e4b", config={"native_tools": True}, call_params={"think": False});
@@ -29,9 +30,51 @@ sem Intent.task = "For build/add/fix: a clear one-line instruction to hand to th
 sem Intent.blurb = "A short, warm one-sentence acknowledgement in first person of what you're about to do (for build/add/fix), e.g. 'Sure — I'll add a like button to the timeline.' Empty for 'chat'.";
 
 def classify_intent(message: str, project: str) -> Intent by llm(temperature=0.2);
-sem classify_intent = "Decide how to handle the user's message given the current project. Prefer 'chat' whenever the message is a question, a greeting, or asks how/what/why rather than requesting a change. Only choose build/add/fix when the user clearly wants code written or changed.";
+sem classify_intent = "Decide how to handle the user's message given the current project. Classify by GRAMMAR, not politeness: an imperative or a request asking for something to be written, added, changed, built or removed is build/add/fix even when phrased casually, tersely, or as a correction of what you just did ('no, build the frontend', 'do the UI too'). Choose 'chat' only when the user asks a question, greets you, or wants an explanation and no code needs to change. jac-mini-coder builds BOTH backends and frontends — a request for a UI, a frontend, a theme or a redesign is always actionable work, never out of scope.";
 sem classify_intent.message = "What the user just typed.";
 sem classify_intent.project = "A summary of the current project (files, endpoints, and whether anything is built yet).";
+
+# Verbs that mean "change my code". An imperative built on one of these is work,
+# whatever the classifier decided.
+glob DO_VERBS: list[str] = ["build", "make", "create", "add", "implement", "generate",
+                            "scaffold", "write", "rebuild", "redo", "redesign", "restyle",
+                            "change", "update", "remove", "delete", "rename", "refactor",
+                            "wire", "hook up", "set up", "give me", "i want", "i need"];
+# Openers that mean "explain", when no DO_VERB is present.
+glob ASK_OPENERS: list[str] = ["what", "why", "how", "who", "when", "where", "did", "does",
+                               "do you", "is ", "are ", "was ", "explain", "show me",
+                               "tell me", "which"];
+# Politeness that wraps a real instruction. "can you build X" is a request; the
+# bare interrogatives above are not.
+glob REQUEST_MARKERS: list[str] = ["can you", "could you", "would you", "please",
+                                   "lets ", "let's ", "go ahead", "i want", "i need"];
+
+"""Override the classifier when the grammar is unambiguous (owner=code).
+
+The model is the only thing standing between the user and the builder, and a
+chat-biased prompt made gpt-4o-mini read "no build the full frontend." as
+conversation — three times running, so the user typed the same request four
+different ways and got four explanations back. A classifier this load-bearing
+needs a floor that does not depend on the model's mood: a message carrying an
+action verb is work, and a bare question with no action verb is chat. Anything
+in between is left to the model."""
+def force_kind(line: str, model_kind: str, has_project: bool) -> str {
+    t = " " + line.lower().strip() + " ";
+    has_do = any([(" " + v) in t for v in DO_VERBS]);
+    stripped = line.lower().strip();
+    asks = any([stripped.startswith(o) for o in ASK_OPENERS]) or stripped.endswith("?");
+    asked_politely = any([m in t for m in REQUEST_MARKERS]);
+    if has_do and ((not asks) or asked_politely) {
+        # a real instruction — never let it fall through to chat
+        if model_kind in ["build", "add", "fix"] { return model_kind; }
+        if any([w in t for w in minicoder.FIX_WORDS]) { return "fix"; }
+        return "add" if has_project else "build";
+    }
+    # a question that happens to name an action ("what did you build") is still a
+    # question — the interrogative wins unless the user asked politely for work
+    if asks { return "chat"; }
+    return model_kind if model_kind else "chat";
+}
 
 """Answer a question or hold a conversation, grounded in the project. Streams."""
 def chat_reply(message: str, project: str) -> str by llm(

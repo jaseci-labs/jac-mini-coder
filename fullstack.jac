@@ -1502,9 +1502,24 @@ def wants_ai(task: str) -> bool {
     return any([(" " + w + " ") in lowered for w in AI_WORDS]);
 }
 
-glob FRONT_WORDS: list[str] = ["ui", "frontend", "front-end", "web app", "webapp", "page", "website", "fullstack", "full-stack", "interface"];
+glob FRONT_WORDS: list[str] = ["ui", "frontend", "front-end", "web app", "webapp", "page",
+    "website", "fullstack", "full-stack", "interface", "screen", "dashboard", "form",
+    "button", "theme", "colour", "color", "design", "look like", "styled", "styling",
+    "layout", "clone of", "site"];
+
+# Words that mean the user explicitly wants the API only. Without these, an "app"
+# is assumed to have a face.
+glob BACKEND_ONLY_WORDS: list[str] = ["backend", "back-end", "api only", "api-only",
+    "just the api", "rest api", "service", "microservice", "endpoints only"];
+
+# An "app"/"clone" is a product, and a product has a UI. The old list required an
+# explicit UI noun, so "build a full linkedin app in an orange color theme" —
+# which names a product AND a colour scheme — was served as a headless API.
+glob APP_WORDS: list[str] = ["app", "application", "clone", "platform", "portal", "network"];
 
 def wants_frontend(task: str) -> bool {
     lowered = " " + task.lower() + " ";
-    return any([(" " + w) in lowered for w in FRONT_WORDS]);
+    if any([(" " + w) in lowered for w in BACKEND_ONLY_WORDS]) { return False; }
+    if any([(" " + w) in lowered for w in FRONT_WORDS]) { return True; }
+    return any([(" " + w) in lowered for w in APP_WORDS]);
 }

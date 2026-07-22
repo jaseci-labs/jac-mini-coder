@@ -389,11 +389,30 @@ def pick_model -> dict[str, str] {
 }
 
 
-def run_task(task: str, work_dir: str) -> minicoder.BuildResult {
+def run_task(task: str, work_dir: str, kind_hint: str = "") -> minicoder.BuildResult {
     if not os.path.exists(work_dir) {
         os.makedirs(work_dir, exist_ok=True);
     }
     kind = minicoder.route(work_dir, task);
+    # route() is STRUCTURAL: it answers "which project is here", and once one
+    # exists it labels every request add_endpoint. That is how "build a linkedin
+    # app" became an endpoint bolted onto an existing twitter clone. The user's
+    # intent decides WHAT to do; route() only decides WHERE.
+    proj_dir = kind.split(":", 1)[1] if ":" in kind else "";
+    if kind_hint == "build" { kind = "build"; }
+    elif kind_hint == "fix" and proj_dir { kind = "fix_bug:" + proj_dir; }
+    elif kind_hint == "add" and proj_dir { kind = "add_endpoint:" + proj_dir; }
+    # Adding a UI to an existing backend has no task-graph — add_endpoint only
+    # writes endpoints. Say so instead of silently producing another endpoint
+    # and reporting success.
+    if kind.startswith("add_endpoint") and fullstack.wants_frontend(task)
+        and (not os.path.exists(os.path.join(proj_dir, "frontend.cl.jac"))) {
+        return minicoder.BuildResult(ok=False, stage="add_frontend",
+            message="this project is backend-only, and adding a UI to an existing backend "
+                + "is not supported yet — I would only write another endpoint. Ask for the "
+                + "whole thing in one go (e.g. \"build a fullstack linkedin app with a UI\") "
+                + "and I will scaffold it with a frontend from the start.", files=[]);
+    }
     res = minicoder.BuildResult(ok=False, stage="none", message="no result", files=[]);
     with console.status("[orange3]✳[/orange3] [bold]Routing…[/bold] [dim](ctrl+c to interrupt)[/dim]") as st {
         STATUS = st;
@@ -510,6 +529,9 @@ def handle_message(line: str, work_dir: str) {
     with console.status("[orange3]✳[/orange3] [dim]thinking…[/dim]") as _st {
         try { intent = agent.classify_intent(line, proj); } except Exception {}
     }
+    # owner=code floor: the model does not get the last word on whether an
+    # instruction is an instruction
+    intent.kind = agent.force_kind(line, intent.kind, "No project has been built" not in proj);
     if (not intent.kind) or (intent.kind == "chat") {
         agent_head();
         try { stream_out(agent.chat_reply(line, proj)); }
@@ -529,7 +551,7 @@ def handle_message(line: str, work_dir: str) {
     if intent.task and (intent.task.lower() not in line.lower()) {
         task = line + "\n\n(interpretation: " + intent.task + ")";
     }
-    res = run_task(task, work_dir);
+    res = run_task(task, work_dir, intent.kind);
     outcome = ("succeeded: " + res.message) if res.ok
         else ("FAILED at " + res.stage + " — " + res.message.split("\n")[0][:200]);
     console.print("  ", end="");
