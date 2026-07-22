@@ -6,7 +6,7 @@
 
 [project]
 name = "jac-mini-coder"
-version = "0.4.1"
+version = "0.4.2"
 description = "A Jac coding agent small enough for small models — compiled task-graphs, typed slots, code-owned gates"
 entry-point = "main.jac"
 
